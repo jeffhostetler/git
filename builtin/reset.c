@@ -285,6 +285,19 @@ static int git_reset_config(const char *var, const char *value, void *cb)
 	return git_default_config(var, value, cb);
 }
 
+static int run_pre_reset_hook(int reset_type, const char **argv)
+{
+	struct argv_array args = ARGV_ARRAY_INIT;
+	int ret;
+
+	argv_array_push(&args, reset_type_names[reset_type == NONE ? MIXED : reset_type]);
+	argv_array_pushv(&args, argv);
+	ret = run_hook_argv(NULL, "pre-reset", args.argv);
+	argv_array_clear(&args);
+
+	return ret;
+}
+
 int cmd_reset(int argc, const char **argv, const char *prefix)
 {
 	int reset_type = NONE, update_ref_status = 0, quiet = 0;
@@ -318,6 +331,9 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 	argc = parse_options(argc, argv, prefix, options, git_reset_usage,
 						PARSE_OPT_KEEP_DASHDASH);
 	parse_args(&pathspec, argv, prefix, patch_mode, &rev);
+
+	if (run_pre_reset_hook(reset_type, argv))
+		die("pre-reset hook aborted command");
 
 	unborn = !strcmp(rev, "HEAD") && get_oid("HEAD", &oid);
 	if (unborn) {
