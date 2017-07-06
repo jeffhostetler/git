@@ -810,6 +810,7 @@ LIB_OBJS += list-objects.o
 LIB_OBJS += list-objects-filter-blobs-limit.o
 LIB_OBJS += list-objects-filter-blobs-none.o
 LIB_OBJS += list-objects-filter-map.o
+LIB_OBJS += list-objects-filter-options.o
 LIB_OBJS += list-objects-filter-sparse.o
 LIB_OBJS += ll-merge.o
 LIB_OBJS += lockfile.o
