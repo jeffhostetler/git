@@ -918,6 +918,7 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 	int lock_error = 0;
 	int split_index = -1;
 	int force_write = 0;
+	int fsmonitor = -1;
 	struct lock_file *lock_file;
 	struct parse_opt_ctx_t ctx;
 	strbuf_getline_fn getline_fn;
@@ -1011,6 +1012,8 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 			    N_("enable untracked cache without testing the filesystem"), UC_FORCE),
 		OPT_SET_INT(0, "force-write-index", &force_write,
 			N_("write out the index even if is not flagged as changed"), 1),
+		OPT_BOOL(0, "fsmonitor", &fsmonitor,
+			N_("enable or disable file system monitor")),
 		OPT_END()
 	};
 
@@ -1150,6 +1153,22 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 		break;
 	default:
 		die("BUG: bad untracked_cache value: %d", untracked_cache);
+	}
+
+	if (fsmonitor > 0) {
+		if (git_config_get_fsmonitor() == 0)
+			warning(_("core.fsmonitor is unset; "
+				"set it if you really want to "
+				"enable fsmonitor"));
+		add_fsmonitor(&the_index);
+		report(_("fsmonitor enabled"));
+	} else if (!fsmonitor) {
+		if (git_config_get_fsmonitor() == 1)
+			warning(_("core.fsmonitor is set; "
+				"remove it if you really want to "
+				"disable fsmonitor"));
+		remove_fsmonitor(&the_index);
+		report(_("fsmonitor disabled"));
 	}
 
 	if (active_cache_changed || force_write) {
