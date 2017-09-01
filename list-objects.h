@@ -1,6 +1,9 @@
 #ifndef LIST_OBJECTS_H
 #define LIST_OBJECTS_H
 
+#include "oidset2.h"
+#include "object-filter.h"
+
 typedef void (*show_commit_fn)(struct commit *, void *);
 typedef void (*show_object_fn)(struct object *, const char *, void *);
 void traverse_commit_list(struct rev_info *, show_commit_fn, show_object_fn, void *);
@@ -37,5 +40,13 @@ void traverse_commit_list_worker(
 	struct rev_info *,
 	show_commit_fn, show_object_fn, void *show_data,
 	filter_object_fn filter, void *filter_data);
+
+void traverse_commit_list_filtered(
+	struct object_filter_options *filter_options,
+	struct rev_info *revs,
+	show_commit_fn show_commit,
+	show_object_fn show_object,
+	oidset2_foreach_cb print_omitted_object,
+	void *show_data);
 
 #endif
