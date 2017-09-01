@@ -805,6 +805,7 @@ LIB_OBJS += line-log.o
 LIB_OBJS += line-range.o
 LIB_OBJS += list-objects.o
 LIB_OBJS += list-objects-filter-all.o
+LIB_OBJS += list-objects-filter-large.o
 LIB_OBJS += ll-merge.o
 LIB_OBJS += lockfile.o
 LIB_OBJS += log-tree.o
