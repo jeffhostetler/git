@@ -7,6 +7,9 @@
 #include "tree-walk.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "list-objects-filter-all.h"
+#include "list-objects-filter-large.h"
+#include "list-objects-filter-sparse.h"
 
 static void process_blob(struct rev_info *revs,
 			 struct blob *blob,
@@ -265,4 +268,35 @@ void traverse_commit_list(struct rev_info *revs,
 		revs,
 		show_commit, show_object, show_data,
 		NULL, NULL);
+}
+
+void traverse_commit_list_filtered(
+	struct object_filter_options *filter_options,
+	struct rev_info *revs,
+	show_commit_fn show_commit,
+	show_object_fn show_object,
+	oidset2_foreach_cb print_omitted_object,
+	void *show_data)
+{
+	if (filter_options->omit_all_blobs)
+		traverse_commit_list_omit_all_blobs(
+			revs, show_commit, show_object, print_omitted_object, show_data);
+
+	else if (filter_options->omit_large_blobs)
+		traverse_commit_list_omit_large_blobs(
+			revs, show_commit, show_object, print_omitted_object, show_data,
+			(int64_t)(uint64_t)filter_options->large_byte_limit);
+
+	else if (filter_options->use_blob)
+		traverse_commit_list_use_blob(
+			revs, show_commit, show_object, print_omitted_object, show_data,
+			&filter_options->sparse_oid);
+
+	else if (filter_options->use_path)
+		traverse_commit_list_use_path(
+			revs, show_commit, show_object, print_omitted_object, show_data,
+			filter_options->sparse_value);
+
+	else
+		die("unspecified list-objects filter");
 }
