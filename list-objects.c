@@ -7,6 +7,9 @@
 #include "tree-walk.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "list-objects-filter-blobs-none.h"
+#include "list-objects-filter-blobs-limit.h"
+#include "list-objects-filter-sparse.h"
 
 static void process_blob(struct rev_info *revs,
 			 struct blob *blob,
@@ -265,4 +268,46 @@ void traverse_commit_list(struct rev_info *revs,
 		revs,
 		show_commit, show_object, show_data,
 		NULL, NULL);
+}
+
+void traverse_commit_list_filtered(
+	struct list_objects_filter_options *filter_options,
+	struct rev_info *revs,
+	show_commit_fn show_commit,
+	show_object_fn show_object,
+	list_objects_filter_map_foreach_cb print_omitted_object,
+	void *show_data)
+{
+	switch (filter_options->choice) {
+	case LOFC_DISABLED:
+		traverse_commit_list(revs, show_commit, show_object, show_data);
+		return;
+
+	case LOFC_BLOB_NONE:
+		traverse_commit_list__blobs_none(
+			revs, show_commit, show_object, print_omitted_object,
+			show_data);
+		return;
+
+	case LOFC_BLOB_LIMIT:
+		traverse_commit_list__blobs_limit(
+			revs, show_commit, show_object, print_omitted_object,
+			show_data, filter_options->blob_limit_value);
+		return;
+
+	case LOFC_SPARSE_OID:
+		traverse_commit_list__sparse_oid(
+			revs, show_commit, show_object, print_omitted_object,
+			show_data, filter_options->sparse_oid_value);
+		return;
+
+	case LOFC_SPARSE_PATH:
+		traverse_commit_list__sparse_path(
+			revs, show_commit, show_object, print_omitted_object,
+			show_data, filter_options->sparse_path_value);
+		return;
+
+	default:
+		die("unspecified list-objects filter");
+	}
 }
