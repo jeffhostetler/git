@@ -231,6 +231,23 @@ So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 	With this option, parents that are hidden by grafts are packed
 	nevertheless.
 
+--filter-omit-all-blobs::
+	Requires `--stdout`.  Omits all blobs from the packfile.
+
+--filter-omit-large-blobs=<n>[kmg]::
+	Requires `--stdout`.  Omits large blobs larger than n bytes from
+	the packfile.  May optionally be followed by 'k', 'm', or 'g' units.
+	Value may be zero.  Special files (matching ".git*") are always
+	included, regardless of size.
+
+--filter-use-blob=<blob-ish>::
+--filter-use-path=<path>::
+	Requires `--stdout`.  Use a sparse-checkout specification to
+	filter the resulting packfile to only contain the blobs that
+	would be referenced by such a sparse-checkout.  `<path>` specifies
+	a local pathname.  `<blob-ish>` specifies an expression that can
+	be evaluated to a blob.
+
 SEE ALSO
 --------
 linkgit:git-rev-list[1]
