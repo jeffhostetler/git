@@ -26,6 +26,7 @@
 #include "run-command.h"
 #include "connected.h"
 #include "packfile.h"
+#include "object-filter.h"
 
 /*
  * Overall FIXMEs:
@@ -60,6 +61,7 @@ static struct string_list option_optional_reference = STRING_LIST_INIT_NODUP;
 static int option_dissociate;
 static int max_jobs = -1;
 static struct string_list option_recurse_submodules = STRING_LIST_INIT_NODUP;
+static struct object_filter_options filter_options;
 
 static int recurse_submodules_cb(const struct option *opt,
 				 const char *arg, int unset)
@@ -135,6 +137,15 @@ static struct option builtin_clone_options[] = {
 			TRANSPORT_FAMILY_IPV4),
 	OPT_SET_INT('6', "ipv6", &family, N_("use IPv6 addresses only"),
 			TRANSPORT_FAMILY_IPV6),
+
+	OPT_PARSE_FILTER_OMIT_ALL_BLOBS(&filter_options),
+	OPT_PARSE_FILTER_OMIT_LARGE_BLOBS(&filter_options),
+	OPT_PARSE_FILTER_USE_BLOB(&filter_options),
+	OPT_PARSE_FILTER_USE_PATH(&filter_options),
+	/* not needed: OPT_PARSE_FILTER_PRINT_MISSING */
+	/* not needed: OPT_PARSE_FILTER_PRINT_OMITTED */
+	/* not needed: OPT_PARSE_FILTER_RELAX */
+
 	OPT_END()
 };
 
@@ -648,6 +659,8 @@ static void update_remote_refs(const struct ref *refs,
 	if (check_connectivity) {
 		struct check_connected_options opt = CHECK_CONNECTED_INIT;
 
+		opt.filter_relax = object_filter_enabled(&filter_options);
+
 		opt.transport = transport;
 		opt.progress = transport->progress;
 
@@ -1073,6 +1086,8 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 			warning(_("--shallow-since is ignored in local clones; use file:// instead."));
 		if (option_not.nr)
 			warning(_("--shallow-exclude is ignored in local clones; use file:// instead."));
+		if (object_filter_enabled(&filter_options))
+			warning(_("--filter-* options are ignored in local clones; use file:// instead."));
 		if (!access(mkpath("%s/shallow", path), F_OK)) {
 			if (option_local > 0)
 				warning(_("source repository is shallow, ignoring --local"));
@@ -1103,6 +1118,22 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	if (option_upload_pack)
 		transport_set_option(transport, TRANS_OPT_UPLOADPACK,
 				     option_upload_pack);
+
+	if (filter_options.omit_all_blobs)
+		transport_set_option(transport,
+				     TRANS_OPT_FILTER_OMIT_ALL_BLOBS, "1");
+	if (filter_options.omit_large_blobs)
+		transport_set_option(transport,
+				     TRANS_OPT_FILTER_OMIT_LARGE_BLOBS,
+				     filter_options.large_byte_limit_string);
+	if (filter_options.use_blob)
+		transport_set_option(transport,
+				     TRANS_OPT_FILTER_USE_BLOB,
+				     filter_options.sparse_value);
+	if (filter_options.use_path)
+		transport_set_option(transport,
+				     TRANS_OPT_FILTER_USE_PATH,
+				     filter_options.sparse_value);
 
 	if (transport->smart_options && !deepen)
 		transport->smart_options->check_self_contained_and_connected = 1;
