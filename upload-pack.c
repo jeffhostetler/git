@@ -18,6 +18,7 @@
 #include "parse-options.h"
 #include "argv-array.h"
 #include "prio-queue.h"
+#include "object-filter.h"
 
 static const char * const upload_pack_usage[] = {
 	N_("git upload-pack [<options>] <dir>"),
@@ -63,6 +64,9 @@ static int use_sideband;
 static int advertise_refs;
 static int stateless_rpc;
 static const char *pack_objects_hook;
+
+static int capability_filter_objects_requested;
+static struct object_filter_options filter_options;
 
 static void reset_timeout(void)
 {
@@ -131,6 +135,38 @@ static void create_pack_file(void)
 		argv_array_push(&pack_objects.args, "--delta-base-offset");
 	if (use_include_tag)
 		argv_array_push(&pack_objects.args, "--include-tag");
+
+	if (filter_options.omit_all_blobs)
+		argv_array_push(
+			&pack_objects.args,
+			("--" CL_ARG_FILTER_OMIT_ALL_BLOBS));
+	else if (filter_options.omit_large_blobs) {
+		if (filter_options.large_byte_limit_string)
+			argv_array_pushf(
+				&pack_objects.args, "--%s=%s",
+				CL_ARG_FILTER_OMIT_LARGE_BLOBS,
+				filter_options.large_byte_limit_string);
+		else
+			argv_array_pushf(
+				&pack_objects.args, "--%s=%ld",
+				CL_ARG_FILTER_OMIT_LARGE_BLOBS,
+				filter_options.large_byte_limit);
+	} else if (filter_options.use_blob) {
+		if (!oidcmp(&filter_options.sparse_oid, &null_oid))
+			argv_array_pushf(
+				&pack_objects.args, "--%s=%s",
+				CL_ARG_FILTER_USE_BLOB,
+				oid_to_hex(&filter_options.sparse_oid));
+		else
+			argv_array_pushf(
+				&pack_objects.args, "--%s=%s",
+				CL_ARG_FILTER_USE_BLOB,
+				filter_options.sparse_value);
+	} else if (filter_options.use_path)
+		argv_array_pushf(
+			&pack_objects.args, "--%s=%s",
+			CL_ARG_FILTER_USE_PATH,
+			filter_options.sparse_value);
 
 	pack_objects.in = -1;
 	pack_objects.out = -1;
@@ -794,6 +830,12 @@ static void receive_needs(void)
 			deepen_rev_list = 1;
 			continue;
 		}
+		if (object_filter_hand_parse_protocol(
+			    &filter_options, line, 0, 0, 0)) {
+			if (!capability_filter_objects_requested)
+				die("git upload-pack: filtering capability not negotiated");
+			continue;
+		}
 		if (!skip_prefix(line, "want ", &arg) ||
 		    get_oid_hex(arg, &oid_buf))
 			die("git upload-pack: protocol error, "
@@ -821,6 +863,9 @@ static void receive_needs(void)
 			no_progress = 1;
 		if (parse_feature_request(features, "include-tag"))
 			use_include_tag = 1;
+		if (parse_feature_request(features,
+					  PROTOCOL_CAPABILITY__FILTER_OBJECTS))
+			capability_filter_objects_requested = 1;
 
 		o = parse_object(&oid_buf);
 		if (!o) {
@@ -929,7 +974,8 @@ static int send_ref(const char *refname, const struct object_id *oid,
 {
 	static const char *capabilities = "multi_ack thin-pack side-band"
 		" side-band-64k ofs-delta shallow deepen-since deepen-not"
-		" deepen-relative no-progress include-tag multi_ack_detailed";
+		" deepen-relative no-progress include-tag multi_ack_detailed"
+		" " PROTOCOL_CAPABILITY__FILTER_OBJECTS;
 	const char *refname_nons = strip_namespace(refname);
 	struct object_id peeled;
 
