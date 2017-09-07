@@ -143,6 +143,10 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 			args.update_shallow = 1;
 			continue;
 		}
+		if (object_filter_hand_parse_arg(&args.filter_options,
+						 arg, 0, 0, 0))
+			continue;
+
 		usage(fetch_pack_usage);
 	}
 	if (deepen_not.nr)

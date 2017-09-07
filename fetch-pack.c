@@ -377,6 +377,9 @@ static int find_common(struct fetch_pack_args *args,
 			if (prefer_ofs_delta)   strbuf_addstr(&c, " ofs-delta");
 			if (deepen_since_ok)    strbuf_addstr(&c, " deepen-since");
 			if (deepen_not_ok)      strbuf_addstr(&c, " deepen-not");
+			if (object_filter_enabled(&args->filter_options))
+				strbuf_addstr(
+					&c, (" " PROTOCOL_CAPABILITY__FILTER_OBJECTS));
 			if (agent_supported)    strbuf_addf(&c, " agent=%s",
 							    git_user_agent_sanitized());
 			packet_buf_write(&req_buf, "want %s%s\n", remote_hex, c.buf);
@@ -407,6 +410,32 @@ static int find_common(struct fetch_pack_args *args,
 			packet_buf_write(&req_buf, "deepen-not %s", s->string);
 		}
 	}
+
+	if (object_filter_enabled(&args->filter_options)) {
+		if (args->filter_options.omit_all_blobs)
+			packet_buf_write(
+				&req_buf,
+				PROTOCOL_REQUEST__FILTER_OMIT_ALL_BLOBS);
+		else if (args->filter_options.omit_large_blobs)
+			packet_buf_write(
+				&req_buf,
+				PROTOCOL_REQUEST__FILTER_OMIT_LARGE_BLOBS " %ld",
+				args->filter_options.large_byte_limit);
+		else if (args->filter_options.use_blob)
+			packet_buf_write(
+				&req_buf,
+				PROTOCOL_REQUEST__FILTER_USE_BLOB " %s",
+				args->filter_options.sparse_value);
+		else if (args->filter_options.use_path)
+			packet_buf_write(
+				&req_buf,
+				PROTOCOL_REQUEST__FILTER_USE_PATH " %s",
+				args->filter_options.sparse_value);
+		else
+			BUG("fetch-pack: unknown filter");
+	}
+		
+
 	packet_buf_flush(&req_buf);
 	state_len = req_buf.len;
 
@@ -850,6 +879,15 @@ static int get_pack(struct fetch_pack_args *args,
 					"--keep=fetch-pack %"PRIuMAX " on %s",
 					(uintmax_t)getpid(), hostname);
 		}
+
+		/*
+		 * Relax consistency checks to allow missing blobs (presumably
+		 * because thay are exactly the set that we requested to be
+		 * omitted.
+		 */
+		if (object_filter_enabled(&args->filter_options))
+			argv_array_push(&cmd.args, "--" CL_ARG_FILTER_RELAX);
+
 		if (args->check_self_contained_and_connected)
 			argv_array_push(&cmd.args, "--check-self-contained-and-connected");
 	}
@@ -962,6 +1000,13 @@ static struct ref *do_fetch_pack(struct fetch_pack_args *args,
 		print_verbose(args, _("Server supports ofs-delta"));
 	else
 		prefer_ofs_delta = 0;
+
+	if (server_supports(PROTOCOL_CAPABILITY__FILTER_OBJECTS))
+		print_verbose(args, _("Server supports "
+				      PROTOCOL_CAPABILITY__FILTER_OBJECTS));
+	else if (object_filter_enabled(&args->filter_options))
+		die("Server does not support %s",
+		    PROTOCOL_CAPABILITY__FILTER_OBJECTS);
 
 	if ((agent_feature = server_feature_value("agent", &agent_len))) {
 		agent_supported = 1;
