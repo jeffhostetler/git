@@ -170,4 +170,13 @@ int object_filter_hand_parse_protocol(struct object_filter_options *filter_optio
 				      int allow_print_missing,
 				      int allow_relax);
 
+/* See Documentation/technical/protocol-capabilities.txt */
+#define PROTOCOL_CAPABILITY__FILTER_OBJECTS         "filter-objects"
+
+/* See Documentation/technical/pack-protocol.txt */
+#define PROTOCOL_REQUEST__FILTER_OMIT_ALL_BLOBS     "filter-omit-all-blobs"
+#define PROTOCOL_REQUEST__FILTER_OMIT_LARGE_BLOBS   "filter-omit-large-blobs"
+#define PROTOCOL_REQUEST__FILTER_USE_BLOB           "filter-use-blob"
+#define PROTOCOL_REQUEST__FILTER_USE_PATH           "filter-use-path"
+
 #endif /* OBJECT_FILTER_H */
