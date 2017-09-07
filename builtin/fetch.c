@@ -18,6 +18,7 @@
 #include "argv-array.h"
 #include "utf8.h"
 #include "packfile.h"
+#include "object-filter.h"
 
 static const char * const builtin_fetch_usage[] = {
 	N_("git fetch [<options>] [<repository> [<refspec>...]]"),
@@ -55,6 +56,7 @@ static int recurse_submodules_default = RECURSE_SUBMODULES_ON_DEMAND;
 static int shown_url = 0;
 static int refmap_alloc, refmap_nr;
 static const char **refmap_array;
+static struct object_filter_options filter_options;
 
 static int git_fetch_config(const char *k, const char *v, void *cb)
 {
@@ -160,6 +162,15 @@ static struct option builtin_fetch_options[] = {
 			TRANSPORT_FAMILY_IPV4),
 	OPT_SET_INT('6', "ipv6", &family, N_("use IPv6 addresses only"),
 			TRANSPORT_FAMILY_IPV6),
+
+	OPT_PARSE_FILTER_OMIT_ALL_BLOBS(&filter_options),
+	OPT_PARSE_FILTER_OMIT_LARGE_BLOBS(&filter_options),
+	OPT_PARSE_FILTER_USE_BLOB(&filter_options),
+	OPT_PARSE_FILTER_USE_PATH(&filter_options),
+	/* not needed: OPT_PARSE_FILTER_PRINT_MISSING */
+	/* not needed: OPT_PARSE_FILTER_PRINT_OMITTED */
+	/* not needed: OPT_PARSE_FILTER_RELAX */
+
 	OPT_END()
 };
 
@@ -754,6 +765,9 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 	const char *filename = dry_run ? "/dev/null" : git_path_fetch_head();
 	int want_status;
 	int summary_width = transport_summary_width(ref_map);
+	struct check_connected_options opt = CHECK_CONNECTED_INIT;
+
+	opt.filter_relax = object_filter_enabled(&filter_options);
 
 	fp = fopen(filename, "a");
 	if (!fp)
@@ -765,7 +779,7 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 		url = xstrdup("foreign");
 
 	rm = ref_map;
-	if (check_connected(iterate_ref_map, &rm, NULL)) {
+	if (check_connected(iterate_ref_map, &rm, &opt)) {
 		rc = error(_("%s did not send all necessary objects\n"), url);
 		goto abort;
 	}
@@ -905,6 +919,8 @@ static int quickfetch(struct ref *ref_map)
 {
 	struct ref *rm = ref_map;
 	struct check_connected_options opt = CHECK_CONNECTED_INIT;
+
+	opt.filter_relax = object_filter_enabled(&filter_options);
 
 	/*
 	 * If we are deepening a shallow clone we already have these
