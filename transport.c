@@ -162,6 +162,10 @@ static int set_git_option(struct git_transport_options *opts,
 		opts->deepen_relative = !!value;
 		return 0;
 	}
+	else if (!strcmp(name, TRANS_OPT_LIST_OBJECTS_FILTER)) {
+		parse_list_objects_filter(&opts->filter_options, value);
+		return 0;
+	}
 	return 1;
 }
 
@@ -229,6 +233,7 @@ static int fetch_refs_via_pack(struct transport *transport,
 		data->options.check_self_contained_and_connected;
 	args.cloning = transport->cloning;
 	args.update_shallow = data->options.update_shallow;
+	args.filter_options = data->options.filter_options;
 
 	if (!data->got_remote_heads) {
 		connect_setup(transport, 0);
