@@ -13,6 +13,7 @@
 #include "streaming.h"
 #include "thread-utils.h"
 #include "packfile.h"
+#include "partial-clone-utils.h"
 
 static const char index_pack_usage[] =
 "git index-pack [-v] [-o <index-file>] [--keep | --keep=<msg>] [--verify] [--strict] (<pack-file> | --stdin [--fix-thin] [<pack-file>])";
@@ -222,6 +223,17 @@ static unsigned check_object(struct object *obj)
 	if (!(obj->flags & FLAG_CHECKED)) {
 		unsigned long size;
 		int type = sha1_object_info(obj->oid.hash, &size);
+
+		if (type <= 0 && is_partial_clone_registered()) {
+			/*
+			 * Relax consistency checks to not complain about
+			 * missing objects (because of earlier partial
+			 * clone or fetch).
+			 */
+			obj->flags |= FLAG_CHECKED;
+			return 0;
+		}
+
 		if (type <= 0)
 			die(_("did not receive expected object %s"),
 			      oid_to_hex(&obj->oid));
