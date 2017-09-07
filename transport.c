@@ -162,6 +162,38 @@ static int set_git_option(struct git_transport_options *opts,
 		opts->deepen_relative = !!value;
 		return 0;
 	}
+	else if (!strcmp(name, TRANS_OPT_FILTER_OMIT_ALL_BLOBS)) {
+		opts->filter_options.omit_all_blobs = !!value;
+		return 0;
+	} else if (!strcmp(name, TRANS_OPT_FILTER_OMIT_LARGE_BLOBS)) {
+		opts->filter_options.omit_large_blobs = 1;
+		opts->filter_options.large_byte_limit_string = value;
+		if (!value)
+			opts->filter_options.large_byte_limit = 0;
+		else if (!git_parse_ulong(
+				 value,
+				 &opts->filter_options.large_byte_limit))
+			die(_("transport: invalid filter value '%s'"), value);
+		return 0;
+	} else if (!strcmp(name, TRANS_OPT_FILTER_USE_BLOB)) {
+		opts->filter_options.use_blob = 1;
+		opts->filter_options.sparse_value = value;
+		/*
+		 * We're constrained by the API for this set_ operation
+		 * and only take a single value.  We don't want to do the
+		 * get_sha1*() lookup (possibly for the second time),
+		 * because the caller should already know and normalized
+		 * the hex OID string (assuming that it used the normal
+		 * parsing methods).  So we assume that the above string
+		 * value is sufficient here and can just NULL the binary
+		 * OID field.
+		 */
+		oidcpy(&opts->filter_options.sparse_oid, &null_oid);
+		return 0;
+	} else if (!strcmp(name, TRANS_OPT_FILTER_USE_PATH)) {
+		opts->filter_options.use_path = 1;
+		opts->filter_options.sparse_value = value;
+	}
 	return 1;
 }
 
@@ -229,6 +261,7 @@ static int fetch_refs_via_pack(struct transport *transport,
 		data->options.check_self_contained_and_connected;
 	args.cloning = transport->cloning;
 	args.update_shallow = data->options.update_shallow;
+	args.filter_options = data->options.filter_options;
 
 	if (!data->got_remote_heads) {
 		connect_setup(transport, 0);

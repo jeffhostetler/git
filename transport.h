@@ -4,6 +4,8 @@
 #include "cache.h"
 #include "run-command.h"
 #include "remote.h"
+#include "fetch-pack.h"
+#include "object-filter.h"
 
 struct string_list;
 
@@ -21,6 +23,7 @@ struct git_transport_options {
 	const char *uploadpack;
 	const char *receivepack;
 	struct push_cas_option *cas;
+	struct object_filter_options filter_options;
 };
 
 enum transport_family {
@@ -209,6 +212,12 @@ void transport_check_allowed(const char *type);
 
 /* Send push certificates */
 #define TRANS_OPT_PUSH_CERT "pushcert"
+
+/* See Documentation/technical/pack-protocol.txt */
+#define TRANS_OPT_FILTER_OMIT_ALL_BLOBS   "filter-omit-all-blobs"
+#define TRANS_OPT_FILTER_OMIT_LARGE_BLOBS "filter-omit-large-blobs"
+#define TRANS_OPT_FILTER_USE_BLOB         "filter-use-blob"
+#define TRANS_OPT_FILTER_USE_PATH         "filter-use-path"
 
 /**
  * Returns 0 if the option was used, non-zero otherwise. Prints a
