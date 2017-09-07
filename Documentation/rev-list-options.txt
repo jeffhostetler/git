@@ -698,6 +698,32 @@ ifdef::git-rev-list[]
 --unpacked::
 	Only useful with `--objects`; print the object IDs that are not
 	in packs.
+
+--filter-omit-all-blobs::
+	Only useful with one of the `--objects*`; omits all blobs from
+	the printed list of objects.
+
+--filter-omit-large-blobs=<n>[kmg]::
+	Only useful with one of the `--objects*`; omits blobs larger than
+	n bytes from the printed list of objects.  May optionally be
+	followed by 'k', 'm', or 'g' units.  Value may be zero.  Special
+	files (matching ".git*") are always included, regardless of size.
+
+--filter-use-blob=<blob-ish>::
+--filter-use-path=<path>::
+	Only useful with one of the `--objects*`; uses a sparse-checkout
+	specification contained in the given object or file to filter the
+	result to only contain blobs referenced by such a sparse-checkout.
+
+--filter-print-manifest::
+	Only useful with one of the above `--filter*`; prints a manifest
+	of the omitted objects.  Object IDs are prefixed with a ``~''
+	character.  The object size is printed after the ID.
+
+--filter-relax::
+	Relax consistency checking for missing blobs.  Do not warn of
+	missing blobs during normal (non-filtering) object traversal
+	following an earlier partial/narrow clone or fetch.
 endif::git-rev-list[]
 
 --no-walk[=(sorted|unsorted)]::

@@ -739,6 +739,11 @@ static void invalidate_directory(struct untracked_cache *uc,
 		dir->dirs[i]->recurse = 0;
 }
 
+static int add_excludes_from_buffer(
+	char *buf, size_t size,
+	const char *base, int baselen,
+	struct exclude_list *el);
+
 /*
  * Given a file with name "fname", read it (either from disk, or from
  * an index if 'istate' is non-null), parse it and store the
@@ -754,9 +759,9 @@ static int add_excludes(const char *fname, const char *base, int baselen,
 			struct sha1_stat *sha1_stat)
 {
 	struct stat st;
-	int fd, i, lineno = 1;
+	int fd;
 	size_t size = 0;
-	char *buf, *entry;
+	char *buf;
 
 	fd = open(fname, O_RDONLY);
 	if (fd < 0 || fstat(fd, &st) < 0) {
@@ -813,6 +818,18 @@ static int add_excludes(const char *fname, const char *base, int baselen,
 		}
 	}
 
+	add_excludes_from_buffer(buf, size, base, baselen, el);
+	return 0;
+}
+
+static int add_excludes_from_buffer(
+	char *buf, size_t size,
+	const char *base, int baselen,
+	struct exclude_list *el)
+{
+	int i, lineno = 1;
+	char *entry;
+
 	el->filebuf = buf;
 
 	if (skip_utf8_bom(&buf, size))
@@ -839,6 +856,38 @@ int add_excludes_from_file_to_list(const char *fname, const char *base,
 				   struct index_state *istate)
 {
 	return add_excludes(fname, base, baselen, el, istate, NULL);
+}
+
+int add_excludes_from_blob_to_list(
+	struct object_id *oid,
+	const char *base, int baselen,
+	struct exclude_list *el)
+{
+	char *buf;
+	unsigned long size;
+	enum object_type type;
+
+	buf = read_sha1_file(oid->hash, &type, &size);
+	if (!buf)
+		return -1;
+
+	if (type != OBJ_BLOB) {
+		free(buf);
+		return -1;
+	}
+
+	if (size == 0) {
+		free(buf);
+		return 0;
+	}
+
+	if (buf[size - 1] != '\n') {
+		buf = xrealloc(buf, st_add(size, 1));
+		buf[size++] = '\n';
+	}
+
+	add_excludes_from_buffer(buf, size, base, baselen, el);
+	return 0;
 }
 
 struct exclude_list *add_exclude_list(struct dir_struct *dir,
