@@ -13,6 +13,7 @@
 #include "streaming.h"
 #include "thread-utils.h"
 #include "packfile.h"
+#include "object-filter.h"
 
 static const char index_pack_usage[] =
 "git index-pack [-v] [-o <index-file>] [--keep | --keep=<msg>] [--verify] [--strict] (<pack-file> | --stdin [--fix-thin] [<pack-file>])";
@@ -82,6 +83,7 @@ static int verbose;
 static int show_resolving_progress;
 static int show_stat;
 static int check_self_contained_and_connected;
+static int filter_relax;
 
 static struct progress *progress;
 
@@ -222,6 +224,17 @@ static unsigned check_object(struct object *obj)
 	if (!(obj->flags & FLAG_CHECKED)) {
 		unsigned long size;
 		int type = sha1_object_info(obj->oid.hash, &size);
+
+		if (type <= 0 && filter_relax) {
+			/*
+			 * Relax consistency checks to not complain about
+			 * missing objects (presumably because of earlier
+			 * object filtering).
+			 */
+			obj->flags |= FLAG_CHECKED;
+			return 0;
+		}
+
 		if (type <= 0)
 			die(_("did not receive expected object %s"),
 			      oid_to_hex(&obj->oid));
@@ -1728,6 +1741,8 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 					die(_("bad %s"), arg);
 			} else if (skip_prefix(arg, "--max-input-size=", &arg)) {
 				max_input_size = strtoumax(arg, NULL, 10);
+			} else if (!strcmp(arg, "--" CL_ARG_FILTER_RELAX)) {
+				filter_relax = 1;
 			} else
 				usage(index_pack_usage);
 			continue;
