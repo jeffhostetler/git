@@ -63,6 +63,10 @@ int check_connected(sha1_iterate_fn fn, void *cb_data,
 		argv_array_pushf(&rev_list.args, "--progress=%s",
 				 _("Checking connectivity"));
 
+	if (opt->filter_relax)
+		argv_array_push(&rev_list.args,
+				"--" CL_ARG_FILTER_RELAX);
+
 	rev_list.git_cmd = 1;
 	rev_list.env = opt->env;
 	rev_list.in = -1;

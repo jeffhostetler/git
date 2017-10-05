@@ -79,6 +79,8 @@ static unsigned long cache_max_small_delta_size = 1000;
 
 static unsigned long window_memory_limit = 0;
 
+static struct object_filter_options filter_options;
+
 /*
  * stats
  */
@@ -2816,7 +2818,12 @@ static void get_object_list(int ac, const char **av)
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
 	mark_edges_uninteresting(&revs, show_edge);
-	traverse_commit_list(&revs, show_commit, show_object, NULL);
+	if (object_filter_enabled(&filter_options))
+		traverse_commit_list_filtered(&filter_options, &revs,
+					      show_commit, show_object,
+					      NULL, NULL);
+	else
+		traverse_commit_list(&revs, show_commit, show_object, NULL);
 
 	if (unpack_unreachable_expiration) {
 		revs.ignore_missing_links = 1;
@@ -2952,6 +2959,15 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 			 N_("use a bitmap index if available to speed up counting objects")),
 		OPT_BOOL(0, "write-bitmap-index", &write_bitmap_index,
 			 N_("write a bitmap index together with the pack index")),
+
+		OPT_PARSE_FILTER_OMIT_ALL_BLOBS(&filter_options),
+		OPT_PARSE_FILTER_OMIT_LARGE_BLOBS(&filter_options),
+		OPT_PARSE_FILTER_USE_BLOB(&filter_options),
+		OPT_PARSE_FILTER_USE_PATH(&filter_options),
+		/* not needed: OPT_PARSE_FILTER_PRINT_MISSING */
+		/* not needed: OPT_PARSE_FILTER_PRINT_OMITTED */
+		/* not needed: OPT_PARSE_FILTER_RELAX */
+
 		OPT_END(),
 	};
 
@@ -3027,6 +3043,12 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		die("--keep-unreachable and --unpack-unreachable are incompatible.");
 	if (!rev_list_all || !rev_list_reflog || !rev_list_index)
 		unpack_unreachable_expiration = 0;
+
+	if (object_filter_enabled(&filter_options)) {
+		if (!pack_to_stdout)
+			die("cannot use filtering with an indexable pack.");
+		use_bitmap_index = 0;
+	}
 
 	/*
 	 * "soft" reasons not to use bitmaps - for on-disk repack by default we want

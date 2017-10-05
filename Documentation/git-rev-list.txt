@@ -47,7 +47,14 @@ SYNOPSIS
 	     [ --fixed-strings | -F ]
 	     [ --date=<format>]
 	     [ [ --objects | --objects-edge | --objects-edge-aggressive ]
-	       [ --unpacked ] ]
+	       [ --unpacked ]
+	       [ [ --filter-omit-all-blobs |
+		   --filter-omit-large-blobs=<n>[kmg] |
+		   --filter-use-blob=<blob-ish> |
+		   --filter-use-path=<path> ]
+		 [ --filter-print-missing ]
+		 [ --filter-print-omitted ] ] ]
+	     [ --filter-relax ]
 	     [ --pretty | --header ]
 	     [ --bisect ]
 	     [ --bisect-vars ]

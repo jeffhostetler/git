@@ -54,6 +54,8 @@ static const char rev_list_usage[] =
 
 static struct progress *progress;
 static unsigned progress_counter;
+static struct object_filter_options filter_options;
+static struct oidset2 missing_objects;
 
 static void finish_commit(struct commit *commit, void *data);
 static void show_commit(struct commit *commit, void *data)
@@ -181,8 +183,25 @@ static void finish_commit(struct commit *commit, void *data)
 static void finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid))
+	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid)) {
+		if (filter_options.print_missing) {
+			oidset2_insert(&missing_objects, &obj->oid, obj->type,
+				       -1, name);
+			return;
+		}
+		if (filter_options.relax) {
+			/*
+			 * Relax consistency checks to not complain about
+			 * omitted objects (presumably caused by use of
+			 * the previous use of the 'filter-objects' feature).
+			 *
+			 * Note that this is independent of any filtering that
+			 * we are doing in this run.
+			 */
+			return;
+		}
 		die("missing blob object '%s'", oid_to_hex(&obj->oid));
+	}
 	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
 		parse_object(&obj->oid);
 }
@@ -200,6 +219,25 @@ static void show_object(struct object *obj, const char *name, void *cb_data)
 static void show_edge(struct commit *commit)
 {
 	printf("-%s\n", oid_to_hex(&commit->object.oid));
+}
+
+static void print_omitted_object(int i, int i_limit, struct oidset2_entry *e, void *cb_data)
+{
+	/* struct rev_list_info *info = cb_data; */
+	const char *tn = typename(e->type);
+
+	if (e->object_length == -1)
+		printf("~%s %s\n", oid_to_hex(&e->oid), tn);
+	else
+		printf("~%s %s %"PRIuMAX"\n", oid_to_hex(&e->oid), tn, e->object_length);
+}
+
+static void print_missing_object(int i, int i_limit, struct oidset2_entry *e, void *cb_data)
+{
+	/* struct rev_list_info *info = cb_data; */
+	const char *tn = typename(e->type);
+
+	printf("?%s %s\n", oid_to_hex(&e->oid), tn);
 }
 
 static void print_var_str(const char *var, const char *val)
@@ -335,6 +373,15 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			show_progress = arg;
 			continue;
 		}
+		if (object_filter_hand_parse_arg(
+			    &filter_options, arg, 1, 1, 1)) {
+			if (!revs.blob_objects)
+				die(_("object filtering requires --objects"));
+			if (filter_options.use_blob &&
+			    !oidcmp(&filter_options.sparse_oid, &null_oid))
+				die(_("invalid sparse value"));
+			continue;
+		}
 		usage(rev_list_usage);
 
 	}
@@ -359,6 +406,11 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 
 	if (revs.show_notes)
 		die(_("rev-list does not support display of notes"));
+
+	if (object_filter_enabled(&filter_options)) {
+		if (use_bitmap_index)
+			die(_("cannot combine --use-bitmap-index with object filtering"));
+	}
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -404,7 +456,24 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			return show_bisect_vars(&info, reaches, all);
 	}
 
-	traverse_commit_list(&revs, show_commit, show_object, &info);
+	if (filter_options.print_missing)
+		memset(&missing_objects, 0, sizeof(missing_objects));
+
+	if (object_filter_enabled(&filter_options))
+		traverse_commit_list_filtered(
+			&filter_options, &revs,
+			show_commit, show_object,
+			(filter_options.print_omitted
+			 ? print_omitted_object
+			 : NULL),
+			&info);
+	else
+		traverse_commit_list(&revs, show_commit, show_object, &info);
+
+	if (filter_options.print_missing) {
+		oidset2_foreach(&missing_objects, print_missing_object, &info);
+		oidset2_clear(&missing_objects);
+	}
 
 	stop_progress(&progress);
 
