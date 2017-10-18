@@ -57,8 +57,10 @@ struct remote {
 	char *http_proxy;
 	char *http_proxy_authmethod;
 
-	const char *partial_clone;
+	const char *partial_clone_filter;
 };
+
+#define REMOTE_KEY_PARTIAL_CLONE_FILTER "partialclonefilter"
 
 struct remote *remote_get(const char *name);
 struct remote *pushremote_get(const char *name);
