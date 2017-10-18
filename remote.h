@@ -56,6 +56,8 @@ struct remote {
 	 */
 	char *http_proxy;
 	char *http_proxy_authmethod;
+
+	const char *partial_clone;
 };
 
 struct remote *remote_get(const char *name);

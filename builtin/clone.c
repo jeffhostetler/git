@@ -26,7 +26,7 @@
 #include "run-command.h"
 #include "connected.h"
 #include "packfile.h"
-#include "list-objects-filter-options.h"
+#include "partial-clone-utils.h"
 
 /*
  * Overall FIXMEs:
@@ -1077,7 +1077,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 		if (option_not.nr)
 			warning(_("--shallow-exclude is ignored in local clones; use file:// instead."));
 		if (filter_options.choice)
-			warning(_("Object filtering is ignored in local clones; use file:// instead."));
+			warning(_("Partial clone is ignored in local clones; use file:// instead."));
 		if (!access(mkpath("%s/shallow", path), F_OK)) {
 			if (option_local > 0)
 				warning(_("source repository is shallow, ignoring --local"));
@@ -1113,7 +1113,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 		transport_set_option(transport, TRANS_OPT_LIST_OBJECTS_FILTER,
 				     filter_options.raw_value);
 
-	if (transport->smart_options && !deepen)
+	if (transport->smart_options && !deepen && !filter_options.choice)
 		transport->smart_options->check_self_contained_and_connected = 1;
 
 	refs = transport_get_remote_refs(transport);
@@ -1173,13 +1173,18 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	write_refspec_config(src_ref_prefix, our_head_points_at,
 			remote_head_points_at, &branch_top);
 
+	if (filter_options.choice)
+		partial_clone_utils_register(&filter_options, "origin",
+					     "clone");
+
 	if (is_local)
 		clone_local(path, git_dir);
 	else if (refs && complete_refs_before_fetch)
 		transport_fetch_refs(transport, mapped_refs);
 
 	update_remote_refs(refs, mapped_refs, remote_head_points_at,
-			   branch_top.buf, reflog_msg.buf, transport, !is_local);
+			   branch_top.buf, reflog_msg.buf, transport,
+			   !is_local && !filter_options.choice);
 
 	update_head(our_head_points_at, remote_head, reflog_msg.buf);
 
