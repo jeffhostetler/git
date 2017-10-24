@@ -1439,14 +1439,16 @@ static void write_special_file(const char *suffix, const char *msg,
 		if (close(fd) != 0)
 			die_errno(_("cannot close written %s file '%s'"),
 				  suffix, filename);
-		*report = suffix;
+		if (report)
+			*report = suffix;
 	}
 	strbuf_release(&name_buf);
 }
 
 static void final(const char *final_pack_name, const char *curr_pack_name,
 		  const char *final_index_name, const char *curr_index_name,
-		  const char *keep_msg, unsigned char *sha1)
+		  const char *keep_msg, const char *promisor_msg,
+		  unsigned char *sha1)
 {
 	const char *report = "pack";
 	struct strbuf pack_name = STRBUF_INIT;
@@ -1465,6 +1467,9 @@ static void final(const char *final_pack_name, const char *curr_pack_name,
 	if (keep_msg)
 		write_special_file("keep", keep_msg, final_pack_name, sha1,
 				   &report);
+	if (promisor_msg)
+		write_special_file("promisor", promisor_msg, final_pack_name,
+				   sha1, NULL);
 
 	if (final_pack_name != curr_pack_name) {
 		if (!final_pack_name)
@@ -1654,6 +1659,7 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	const char *curr_index;
 	const char *index_name = NULL, *pack_name = NULL;
 	const char *keep_msg = NULL;
+	const char *promisor_msg = NULL;
 	struct strbuf index_name_buf = STRBUF_INIT;
 	struct pack_idx_entry **idx_objects;
 	struct pack_idx_option opts;
@@ -1703,6 +1709,10 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 				keep_msg = "";
 			} else if (starts_with(arg, "--keep=")) {
 				keep_msg = arg + 7;
+			} else if (!strcmp(arg, "--promisor")) {
+				promisor_msg = "";
+			} else if (starts_with(arg, "--promisor=")) {
+				promisor_msg = arg + strlen("--promisor=");
 			} else if (starts_with(arg, "--threads=")) {
 				char *end;
 				nr_threads = strtoul(arg+10, &end, 0);
@@ -1813,7 +1823,7 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	if (!verify)
 		final(pack_name, curr_pack,
 		      index_name, curr_index,
-		      keep_msg,
+		      keep_msg, promisor_msg,
 		      pack_sha1);
 	else
 		close(input_fd);

@@ -35,7 +35,9 @@ struct options {
 		thin : 1,
 		/* One of the SEND_PACK_PUSH_CERT_* constants. */
 		push_cert : 2,
-		deepen_relative : 1;
+		deepen_relative : 1,
+		from_promisor : 1,
+		no_haves : 1;
 };
 static struct options options;
 static struct string_list cas_options = STRING_LIST_INIT_DUP;
@@ -163,6 +165,15 @@ static int set_option(const char *name, const char *value)
 	} else if (!strcmp(name, "filter")) {
 		options.partial_clone_filter = xstrdup(value);
 		return 0;
+
+	} else if (!strcmp(name, "from-promisor")) {
+		options.from_promisor = 1;
+		return 0;
+
+	} else if (!strcmp(name, "no-haves")) {
+		options.no_haves = 1;
+		return 0;
+
 	} else {
 		return 1 /* unsupported */;
 	}
@@ -831,7 +842,10 @@ static int fetch_git(struct discovery *heads,
 	if (options.partial_clone_filter)
 		argv_array_pushf(&args, "--%s=%s",
 				 CL_ARG__FILTER, options.partial_clone_filter);
-
+	if (options.from_promisor)
+		argv_array_push(&args, "--from-promisor");
+	if (options.no_haves)
+		argv_array_push(&args, "--no-haves");
 	argv_array_push(&args, url.buf);
 
 	for (i = 0; i < nr_heads; i++) {

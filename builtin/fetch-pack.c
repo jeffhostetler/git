@@ -147,6 +147,14 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 			parse_list_objects_filter(&args.filter_options, arg);
 			continue;
 		}
+		if (!strcmp("--from-promisor", arg)) {
+			args.from_promisor = 1;
+			continue;
+		}
+		if (!strcmp("--no-haves", arg)) {
+			args.no_haves = 1;
+			continue;
+		}
 		usage(fetch_pack_usage);
 	}
 	if (deepen_not.nr)
