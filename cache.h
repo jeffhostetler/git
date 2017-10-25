@@ -866,6 +866,7 @@ extern char *repository_format_partial_clone_filter;
 struct repository_format {
 	int version;
 	int precious_objects;
+	char *partial_clone;
 	int is_bare;
 	char *work_tree;
 	char *partial_clone_remote; /* value of extensions.partialcloneremote */
@@ -1589,7 +1590,8 @@ extern struct packed_git {
 	unsigned pack_local:1,
 		 pack_keep:1,
 		 freshened:1,
-		 do_not_close:1;
+		 do_not_close:1,
+		 pack_promisor:1;
 	unsigned char sha1[20];
 	struct revindex_entry *revindex;
 	/* something like ".git/objects/pack/xxxxx.pack" */
@@ -1727,6 +1729,14 @@ struct object_info {
 /* Do not retry packed storage after checking packed and loose storage */
 #define OBJECT_INFO_QUICK 8
 extern int sha1_object_info_extended(const unsigned char *, struct object_info *, unsigned flags);
+
+/*
+ * Set this to 0 to prevent sha1_object_info_extended() from fetching missing
+ * blobs. This has a difference only if is_partial_clone_registered() is true.
+ *
+ * Its default value is 1.
+ */
+extern int fetch_if_missing;
 
 /* Dumb servers support */
 extern int update_server_info(int);
