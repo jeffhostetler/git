@@ -27,6 +27,7 @@
 #include "connected.h"
 #include "packfile.h"
 #include "list-objects-filter-options.h"
+#include "partial-clone-utils.h"
 
 /*
  * Overall FIXMEs:
@@ -889,6 +890,8 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	struct refspec *refspec;
 	const char *fetch_pattern;
 
+	fetch_if_missing = 0;
+
 	packet_trace_identity("clone");
 	argc = parse_options(argc, argv, prefix, builtin_clone_options,
 			     builtin_clone_usage, 0);
@@ -1109,11 +1112,13 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 		transport_set_option(transport, TRANS_OPT_UPLOADPACK,
 				     option_upload_pack);
 
-	if (filter_options.choice)
+	if (filter_options.choice) {
 		transport_set_option(transport, TRANS_OPT_LIST_OBJECTS_FILTER,
 				     filter_options.raw_value);
+		transport_set_option(transport, TRANS_OPT_FROM_PROMISOR, "1");
+	}
 
-	if (transport->smart_options && !deepen)
+	if (transport->smart_options && !deepen && !filter_options.choice)
 		transport->smart_options->check_self_contained_and_connected = 1;
 
 	refs = transport_get_remote_refs(transport);
@@ -1173,13 +1178,18 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	write_refspec_config(src_ref_prefix, our_head_points_at,
 			remote_head_points_at, &branch_top);
 
+	if (filter_options.choice)
+		partial_clone_utils_register(&filter_options, "origin",
+					     "clone");
+
 	if (is_local)
 		clone_local(path, git_dir);
 	else if (refs && complete_refs_before_fetch)
 		transport_fetch_refs(transport, mapped_refs);
 
 	update_remote_refs(refs, mapped_refs, remote_head_points_at,
-			   branch_top.buf, reflog_msg.buf, transport, !is_local);
+			   branch_top.buf, reflog_msg.buf, transport,
+			   !is_local && !filter_options.choice);
 
 	update_head(our_head_points_at, remote_head, reflog_msg.buf);
 
@@ -1200,6 +1210,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	}
 
 	junk_mode = JUNK_LEAVE_REPO;
+	fetch_if_missing = 1;
 	err = checkout(submodule_progress);
 
 	strbuf_release(&reflog_msg);
