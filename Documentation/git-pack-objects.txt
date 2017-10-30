@@ -242,6 +242,10 @@ So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 	the resulting packfile.  See linkgit:git-rev-list[1] for valid
 	`<filter-spec>` forms.
 
+--exclude-promisor-objects::
+	Silently omit referenced but missing objects from the packfile.
+	This is used with partial clone.
+
 SEE ALSO
 --------
 linkgit:git-rev-list[1]
