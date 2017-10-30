@@ -75,6 +75,8 @@ static int use_bitmap_index = -1;
 static int write_bitmap_index;
 static uint16_t write_bitmap_options;
 
+static int exclude_promisor_objects;
+
 static unsigned long delta_cache_size = 0;
 static unsigned long max_delta_cache_size = 256 * 1024 * 1024;
 static unsigned long cache_max_small_delta_size = 1000;
@@ -2551,6 +2553,11 @@ static void show_commit(struct commit *commit, void *data)
 
 static void show_object(struct object *obj, const char *name, void *data)
 {
+	if (exclude_promisor_objects &&
+	    !has_object_file(&obj->oid) &&
+	    is_promisor_object(&obj->oid))
+		return;
+
 	add_preferred_base_object(name);
 	add_object_entry(obj->oid.hash, obj->type, name, 0);
 	obj->flags |= OBJECT_ADDED;
@@ -2960,6 +2967,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		OPT_BOOL(0, "write-bitmap-index", &write_bitmap_index,
 			 N_("write a bitmap index together with the pack index")),
 		OPT_PARSE_LIST_OBJECTS_FILTER(&filter_options),
+		OPT_BOOL(0, "exclude-promisor-objects", &exclude_promisor_objects,
+			 N_("do not pack objects in promisor packfiles")),
 		OPT_END(),
 	};
 
@@ -3003,6 +3012,12 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	if (rev_list_unpacked) {
 		use_internal_rev_list = 1;
 		argv_array_push(&rp, "--unpacked");
+	}
+
+	if (exclude_promisor_objects) {
+		use_internal_rev_list = 1;
+		fetch_if_missing = 0;
+		argv_array_push(&rp, "--exclude-promisor-objects");
 	}
 
 	if (!reuse_object)
