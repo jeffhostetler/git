@@ -19,6 +19,7 @@
 #include "utf8.h"
 #include "packfile.h"
 #include "list-objects-filter-options.h"
+#include "partial-clone-utils.h"
 
 static const char * const builtin_fetch_usage[] = {
 	N_("git fetch [<options>] [<repository> [<refspec>...]]"),
@@ -1048,9 +1049,11 @@ static struct transport *prepare_transport(struct remote *remote, int deepen)
 		set_option(transport, TRANS_OPT_DEEPEN_RELATIVE, "yes");
 	if (update_shallow)
 		set_option(transport, TRANS_OPT_UPDATE_SHALLOW, "yes");
-	if (filter_options.choice)
+	if (filter_options.choice) {
 		set_option(transport, TRANS_OPT_LIST_OBJECTS_FILTER,
 			   filter_options.raw_value);
+		set_option(transport, TRANS_OPT_FROM_PROMISOR, "1");
+	}
 	return transport;
 }
 
@@ -1290,7 +1293,6 @@ static int fetch_multiple(struct string_list *list)
 
 static inline void partial_fetch_one_setup(struct remote *remote)
 {
-#if 0 /* TODO */
 	if (filter_options.choice) {
 		/*
 		 * A partial-fetch was explicitly requested.
@@ -1325,7 +1327,6 @@ static inline void partial_fetch_one_setup(struct remote *remote)
 			&filter_options,
 			repository_format_partial_clone_filter);
 	}
-#endif
 }
 
 static int fetch_one(struct remote *remote, int argc, const char **argv)
@@ -1391,6 +1392,8 @@ int cmd_fetch(int argc, const char **argv, const char *prefix)
 	struct argv_array argv_gc_auto = ARGV_ARRAY_INIT;
 
 	packet_trace_identity("fetch");
+
+	fetch_if_missing = 0;
 
 	/* Record the command line for the reflog */
 	strbuf_addstr(&default_rla, "fetch");
