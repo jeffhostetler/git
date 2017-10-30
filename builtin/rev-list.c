@@ -189,30 +189,44 @@ static void finish_commit(struct commit *commit, void *data)
 	free_commit_buffer(commit);
 }
 
-static void finish_object(struct object *obj, const char *name, void *cb_data)
+static int finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
 	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid)) {
+		/*
+		 * Note: --exclude-promisor-objects and --filter-print-missing
+		 * can be used together.  The former controls whether we *TRY*
+		 * to dynamically fetch missing object.  The latter controls
+		 * whether we print a list of them or die.  This allows us to
+		 * handle cases where the server previously promised an object
+		 * that it no longer has.
+		 */
 		if (arg_print_missing) {
 			oidset_insert(&missing_objects, &obj->oid);
-			return;
+			return 1;
 		}
-
-		/*
-		 * TODO Use the promisor code to try to dynamically
-		 * fetch this blob.
-		 */
+		if (!fetch_if_missing) {
+			/*
+			 * TODO Would it be clearer to say:
+			 *      if (arg_exclude_promisor_objects &&
+			 *          is_promisor_object(&obj->oid))
+			 *              return 1;
+			 */
+			return 1;
+		}
 
 		die("missing blob object '%s'", oid_to_hex(&obj->oid));
 	}
 	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
 		parse_object(&obj->oid);
+	return 0;
 }
 
 static void show_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	finish_object(obj, name, cb_data);
+	if (finish_object(obj, name, cb_data))
+		return;
 	display_progress(progress, ++progress_counter);
 	if (info->flags & REV_LIST_QUIET)
 		return;
@@ -309,6 +323,18 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	init_revisions(&revs, prefix);
 	revs.abbrev = DEFAULT_ABBREV;
 	revs.commit_format = CMIT_FMT_UNSPECIFIED;
+
+	/*
+	 * Scan the argument list before invoking setup_revisions(), so that we
+	 * know if fetch_if_missing needs to be set to 0.
+	 */
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--exclude-promisor-objects")) {
+			fetch_if_missing = 0;
+			break;
+		}
+	}
+
 	argc = setup_revisions(argc, argv, &revs, NULL);
 
 	memset(&info, 0, sizeof(info));
