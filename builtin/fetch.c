@@ -18,6 +18,7 @@
 #include "argv-array.h"
 #include "utf8.h"
 #include "packfile.h"
+#include "list-objects-filter-options.h"
 
 static const char * const builtin_fetch_usage[] = {
 	N_("git fetch [<options>] [<repository> [<refspec>...]]"),
@@ -55,6 +56,7 @@ static int recurse_submodules_default = RECURSE_SUBMODULES_ON_DEMAND;
 static int shown_url = 0;
 static int refmap_alloc, refmap_nr;
 static const char **refmap_array;
+static struct list_objects_filter_options filter_options;
 
 static int git_fetch_config(const char *k, const char *v, void *cb)
 {
@@ -160,6 +162,7 @@ static struct option builtin_fetch_options[] = {
 			TRANSPORT_FAMILY_IPV4),
 	OPT_SET_INT('6', "ipv6", &family, N_("use IPv6 addresses only"),
 			TRANSPORT_FAMILY_IPV6),
+	OPT_PARSE_LIST_OBJECTS_FILTER(&filter_options),
 	OPT_END()
 };
 
@@ -754,6 +757,7 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 	const char *filename = dry_run ? "/dev/null" : git_path_fetch_head();
 	int want_status;
 	int summary_width = transport_summary_width(ref_map);
+	struct check_connected_options opt = CHECK_CONNECTED_INIT;
 
 	fp = fopen(filename, "a");
 	if (!fp)
@@ -765,7 +769,7 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 		url = xstrdup("foreign");
 
 	rm = ref_map;
-	if (check_connected(iterate_ref_map, &rm, NULL)) {
+	if (check_connected(iterate_ref_map, &rm, &opt)) {
 		rc = error(_("%s did not send all necessary objects\n"), url);
 		goto abort;
 	}
@@ -1044,6 +1048,9 @@ static struct transport *prepare_transport(struct remote *remote, int deepen)
 		set_option(transport, TRANS_OPT_DEEPEN_RELATIVE, "yes");
 	if (update_shallow)
 		set_option(transport, TRANS_OPT_UPDATE_SHALLOW, "yes");
+	if (filter_options.choice)
+		set_option(transport, TRANS_OPT_LIST_OBJECTS_FILTER,
+			   filter_options.raw_value);
 	return transport;
 }
 
@@ -1242,6 +1249,20 @@ static int fetch_multiple(struct string_list *list)
 	int i, result = 0;
 	struct argv_array argv = ARGV_ARRAY_INIT;
 
+	if (filter_options.choice) {
+		/*
+		 * We currently only support partial-fetches to the remote
+		 * used for the partial-clone because we only support 1
+		 * promisor remote, so we DO NOT allow explicit command
+		 * line filter arguments.
+		 *
+		 * Note that the loop below will spawn background fetches
+		 * for each remote and one of them MAY INHERIT the proper
+		 * partial-fetch settings, so everything is consistent.
+		 */
+		die(_("partial-fetch is not supported on multiple remotes"));
+	}
+
 	if (!append && !dry_run) {
 		int errcode = truncate_fetch_head();
 		if (errcode)
@@ -1267,6 +1288,46 @@ static int fetch_multiple(struct string_list *list)
 	return result;
 }
 
+static inline void partial_fetch_one_setup(struct remote *remote)
+{
+#if 0 /* TODO */
+	if (filter_options.choice) {
+		/*
+		 * A partial-fetch was explicitly requested.
+		 *
+		 * If this is the first partial-* command on
+		 * this repo, we must register the partial
+		 * settings in the repository extension.
+		 *
+		 * If this follows a previous partial-* command
+		 * we must ensure the args are consistent with
+		 * the existing registration (because we don't
+		 * currently support mixing-and-matching).
+		 */
+		partial_clone_utils_register(&filter_options,
+					     remote->name, "fetch");
+		return;
+	}
+
+	if (is_partial_clone_registered() &&
+	    !strcmp(remote->name, repository_format_partial_clone_remote)) {
+		/*
+		 * If a partial-* command has already been used on
+		 * this repo and it was to this remote, we should
+		 * inherit the filter settings used previously.
+		 * That is, if clone omitted very large blobs, then
+		 * fetch should too.
+		 *
+		 * Use the cached filter-spec and create the filter
+		 * settings.
+		 */
+		parse_list_objects_filter(
+			&filter_options,
+			repository_format_partial_clone_filter);
+	}
+#endif
+}
+
 static int fetch_one(struct remote *remote, int argc, const char **argv)
 {
 	static const char **refs = NULL;
@@ -1277,6 +1338,9 @@ static int fetch_one(struct remote *remote, int argc, const char **argv)
 	if (!remote)
 		die(_("No remote repository specified.  Please, specify either a URL or a\n"
 		    "remote name from which new revisions should be fetched."));
+
+	partial_fetch_one_setup(remote);
+
 
 	gtransport = prepare_transport(remote, 1);
 
