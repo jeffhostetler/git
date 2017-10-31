@@ -4,6 +4,7 @@
 #include "cache.h"
 #include "run-command.h"
 #include "remote.h"
+#include "list-objects-filter-options.h"
 
 struct string_list;
 
@@ -15,12 +16,15 @@ struct git_transport_options {
 	unsigned self_contained_and_connected : 1;
 	unsigned update_shallow : 1;
 	unsigned deepen_relative : 1;
+	unsigned from_promisor : 1;
+	unsigned no_haves : 1;
 	int depth;
 	const char *deepen_since;
 	const struct string_list *deepen_not;
 	const char *uploadpack;
 	const char *receivepack;
 	struct push_cas_option *cas;
+	struct list_objects_filter_options filter_options;
 };
 
 enum transport_family {
@@ -209,6 +213,15 @@ void transport_check_allowed(const char *type);
 
 /* Send push certificates */
 #define TRANS_OPT_PUSH_CERT "pushcert"
+
+/* Filter objects for partial clone and fetch */
+#define TRANS_OPT_LIST_OBJECTS_FILTER "filter"
+
+/* Indicate that these objects are being fetched by a promisor */
+#define TRANS_OPT_FROM_PROMISOR "from-promisor"
+
+/* Do not send "have" lines */
+#define TRANS_OPT_NO_HAVES "no-haves"
 
 /**
  * Returns 0 if the option was used, non-zero otherwise. Prints a

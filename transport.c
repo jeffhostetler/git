@@ -160,6 +160,15 @@ static int set_git_option(struct git_transport_options *opts,
 	} else if (!strcmp(name, TRANS_OPT_DEEPEN_RELATIVE)) {
 		opts->deepen_relative = !!value;
 		return 0;
+	} else if (!strcmp(name, TRANS_OPT_LIST_OBJECTS_FILTER)) {
+		parse_list_objects_filter(&opts->filter_options, value);
+		return 0;
+	} else if (!strcmp(name, TRANS_OPT_FROM_PROMISOR)) {
+		opts->from_promisor = !!value;
+		return 0;
+	} else if (!strcmp(name, TRANS_OPT_NO_HAVES)) {
+		opts->no_haves = !!value;
+		return 0;
 	}
 	return 1;
 }
@@ -228,6 +237,9 @@ static int fetch_refs_via_pack(struct transport *transport,
 		data->options.check_self_contained_and_connected;
 	args.cloning = transport->cloning;
 	args.update_shallow = data->options.update_shallow;
+	args.filter_options = data->options.filter_options;
+	args.from_promisor = data->options.from_promisor;
+	args.no_haves = data->options.no_haves;
 
 	if (!data->got_remote_heads) {
 		connect_setup(transport, 0);
