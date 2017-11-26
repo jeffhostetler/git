@@ -377,6 +377,8 @@ static int find_common(struct fetch_pack_args *args,
 			if (prefer_ofs_delta)   strbuf_addstr(&c, " ofs-delta");
 			if (deepen_since_ok)    strbuf_addstr(&c, " deepen-since");
 			if (deepen_not_ok)      strbuf_addstr(&c, " deepen-not");
+			if (args->filter_options.choice)
+				strbuf_addstr(&c, (" " CL_ARG__FILTER));
 			if (agent_supported)    strbuf_addf(&c, " agent=%s",
 							    git_user_agent_sanitized());
 			packet_buf_write(&req_buf, "want %s%s\n", remote_hex, c.buf);
@@ -407,6 +409,14 @@ static int find_common(struct fetch_pack_args *args,
 			packet_buf_write(&req_buf, "deepen-not %s", s->string);
 		}
 	}
+
+	/*
+	 * TODO Do we need to quote raw_value?
+	 */
+	if (args->filter_options.choice)
+		packet_buf_write(&req_buf, (CL_ARG__FILTER " %s"),
+				 args->filter_options.raw_value);
+
 	packet_buf_flush(&req_buf);
 	state_len = req_buf.len;
 
@@ -850,6 +860,17 @@ static int get_pack(struct fetch_pack_args *args,
 					"--keep=fetch-pack %"PRIuMAX " on %s",
 					(uintmax_t)getpid(), hostname);
 		}
+
+		/*
+		 * Relax consistency checks to allow missing blobs (presumably
+		 * because thay are exactly the set that we requested to be
+		 * omitted.
+		 *
+		 * TODO remove this.
+		 */
+		if (args->filter_options.choice)
+			argv_array_push(&cmd.args, "--filter-relax");
+
 		if (args->check_self_contained_and_connected)
 			argv_array_push(&cmd.args, "--check-self-contained-and-connected");
 	}
@@ -962,6 +983,11 @@ static struct ref *do_fetch_pack(struct fetch_pack_args *args,
 		print_verbose(args, _("Server supports ofs-delta"));
 	else
 		prefer_ofs_delta = 0;
+
+	if (server_supports(CL_ARG__FILTER))
+		print_verbose(args, _("Server supports " CL_ARG__FILTER));
+	else if (args->filter_options.choice)
+		die("Server does not support %s", CL_ARG__FILTER);
 
 	if ((agent_feature = server_feature_value("agent", &agent_len))) {
 		agent_supported = 1;

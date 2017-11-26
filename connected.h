@@ -35,6 +35,14 @@ struct check_connected_options {
 	int progress;
 
 	/*
+	 * Relax consistency checks for missing blobs (presumably due to
+	 * earlier use of object filtering).
+	 *
+	 * TODO remove this.
+	 */
+	int filter_relax;
+
+	/*
 	 * Insert these variables into the environment of the child process.
 	 */
 	const char **env;

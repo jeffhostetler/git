@@ -18,6 +18,7 @@
 #include "parse-options.h"
 #include "argv-array.h"
 #include "prio-queue.h"
+#include "list-objects-filter-options.h"
 
 static const char * const upload_pack_usage[] = {
 	N_("git upload-pack [<options>] <dir>"),
@@ -63,6 +64,9 @@ static int use_sideband;
 static int advertise_refs;
 static int stateless_rpc;
 static const char *pack_objects_hook;
+
+static int capability_filter_objects_requested;
+static struct list_objects_filter_options filter_options;
 
 static void reset_timeout(void)
 {
@@ -131,6 +135,14 @@ static void create_pack_file(void)
 		argv_array_push(&pack_objects.args, "--delta-base-offset");
 	if (use_include_tag)
 		argv_array_push(&pack_objects.args, "--include-tag");
+
+	/*
+	 * TODO Do we need to quote raw_value?
+	 */
+	if (filter_options.choice)
+		argv_array_pushf(&pack_objects.args, "--%s=%s",
+				 CL_ARG__FILTER,
+				 filter_options.raw_value);
 
 	pack_objects.in = -1;
 	pack_objects.out = -1;
@@ -794,6 +806,12 @@ static void receive_needs(void)
 			deepen_rev_list = 1;
 			continue;
 		}
+		if (skip_prefix(line, (CL_ARG__FILTER " "), &arg)) {
+			parse_list_objects_filter(&filter_options, arg);
+			if (filter_options.choice && !capability_filter_objects_requested)
+				die("git upload-pack: filtering capability not negotiated");
+			continue;
+		}
 		if (!skip_prefix(line, "want ", &arg) ||
 		    get_oid_hex(arg, &oid_buf))
 			die("git upload-pack: protocol error, "
@@ -821,6 +839,8 @@ static void receive_needs(void)
 			no_progress = 1;
 		if (parse_feature_request(features, "include-tag"))
 			use_include_tag = 1;
+		if (parse_feature_request(features, CL_ARG__FILTER))
+			capability_filter_objects_requested = 1;
 
 		o = parse_object(&oid_buf);
 		if (!o) {
@@ -929,7 +949,8 @@ static int send_ref(const char *refname, const struct object_id *oid,
 {
 	static const char *capabilities = "multi_ack thin-pack side-band"
 		" side-band-64k ofs-delta shallow deepen-since deepen-not"
-		" deepen-relative no-progress include-tag multi_ack_detailed";
+		" deepen-relative no-progress include-tag multi_ack_detailed"
+		" " CL_ARG__FILTER;
 	const char *refname_nons = strip_namespace(refname);
 	struct object_id peeled;
 

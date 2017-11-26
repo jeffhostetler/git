@@ -54,6 +54,11 @@ static const char rev_list_usage[] =
 
 static struct progress *progress;
 static unsigned progress_counter;
+static struct list_objects_filter_options filter_options;
+static struct oidset2 missing_objects;
+static int arg_print_missing;
+static int arg_print_omitted;
+static int arg_relax;
 
 static void finish_commit(struct commit *commit, void *data);
 static void show_commit(struct commit *commit, void *data)
@@ -181,8 +186,26 @@ static void finish_commit(struct commit *commit, void *data)
 static void finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid))
+	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid)) {
+		if (arg_print_missing) {
+			oidset2_insert_without_length(&missing_objects,
+						      &obj->oid, obj->type,
+						      name);
+			return;
+		}
+		if (arg_relax) {
+			/*
+			 * Relax consistency checks to not complain about
+			 * omitted objects (presumably caused by use of
+			 * the previous use of the 'filter-objects' feature).
+			 *
+			 * Note that this is independent of any filtering that
+			 * we are doing in this run.
+			 */
+			return;
+		}
 		die("missing blob object '%s'", oid_to_hex(&obj->oid));
+	}
 	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
 		parse_object(&obj->oid);
 }
@@ -200,6 +223,25 @@ static void show_object(struct object *obj, const char *name, void *cb_data)
 static void show_edge(struct commit *commit)
 {
 	printf("-%s\n", oid_to_hex(&commit->object.oid));
+}
+
+static void print_omitted_object(int i, int i_limit, struct oidset2_entry *e, void *cb_data)
+{
+	/* struct rev_list_info *info = cb_data; */
+	const char *tn = typename(e->type);
+
+	if (e->object_length_valid)
+		printf("~%s %s %lu\n", oid_to_hex(&e->oid), tn, e->object_length);
+	else
+		printf("~%s %s\n", oid_to_hex(&e->oid), tn);
+}
+
+static void print_missing_object(int i, int i_limit, struct oidset2_entry *e, void *cb_data)
+{
+	/* struct rev_list_info *info = cb_data; */
+	const char *tn = typename(e->type);
+
+	printf("?%s %s\n", oid_to_hex(&e->oid), tn);
 }
 
 static void print_var_str(const char *var, const char *val)
@@ -335,6 +377,30 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			show_progress = arg;
 			continue;
 		}
+
+		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
+			parse_list_objects_filter(&filter_options, arg);
+			if (filter_options.choice && !revs.blob_objects)
+				die(_("object filtering requires --objects"));
+			if (filter_options.choice == LOFC_SPARSE_OID &&
+			    !filter_options.sparse_oid_value)
+				die(_("invalid sparse value '%s'"),
+				    filter_options.raw_value);
+			continue;
+		}
+		if (!strcmp(arg, "--filter-print-missing")) {
+			arg_print_missing = 1;
+			continue;
+		}
+		if (!strcmp(arg, "--filter-print-omitted")) {
+			arg_print_omitted = 1;
+			continue;
+		}
+		if (!strcmp(arg, "--filter-relax")) {
+			arg_relax = 1;
+			continue;
+		}
+		
 		usage(rev_list_usage);
 
 	}
@@ -359,6 +425,9 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 
 	if (revs.show_notes)
 		die(_("rev-list does not support display of notes"));
+
+	if (filter_options.choice && use_bitmap_index)
+		die(_("cannot combine --use-bitmap-index with object filtering"));
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -404,7 +473,21 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			return show_bisect_vars(&info, reaches, all);
 	}
 
-	traverse_commit_list(&revs, show_commit, show_object, &info);
+	if (arg_print_missing)
+		memset(&missing_objects, 0, sizeof(missing_objects));
+
+	if (filter_options.choice)
+		traverse_commit_list_filtered(&filter_options, &revs,
+			show_commit, show_object,
+			(arg_print_omitted ? print_omitted_object : NULL),
+			&info);
+	else
+		traverse_commit_list(&revs, show_commit, show_object, &info);
+
+	if (arg_print_missing) {
+		oidset2_foreach(&missing_objects, print_missing_object, &info);
+		oidset2_clear(&missing_objects);
+	}
 
 	stop_progress(&progress);
 
