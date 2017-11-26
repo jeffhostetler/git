@@ -143,6 +143,11 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 			args.update_shallow = 1;
 			continue;
 		}
+		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
+			parse_list_objects_filter(&args.filter_options, arg);
+			continue;
+		}
+
 		usage(fetch_pack_usage);
 	}
 	if (deepen_not.nr)
