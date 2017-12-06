@@ -290,6 +290,8 @@ extern int commit_lock_file(struct lock_file *lk);
  */
 static inline int commit_lock_file_to(struct lock_file *lk, const char *path)
 {
+	if (fsync_object_files)
+		flush_tempfile(lk->tempfile);
 	return rename_tempfile(&lk->tempfile, path);
 }
 

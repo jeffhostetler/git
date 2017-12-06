@@ -859,7 +859,8 @@ core.whitespace::
   errors. The default tab width is 8. Allowed values are 1 to 63.
 
 core.fsyncObjectFiles::
-	This boolean will enable 'fsync()' when writing object files.
+	This boolean will enable 'fsync()' when writing object files and lock
+	files.
 +
 This is a total waste of time and effort on a filesystem that orders
 data writes properly, but can be useful for filesystems that do not use

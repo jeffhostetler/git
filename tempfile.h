@@ -222,6 +222,12 @@ extern FILE *get_tempfile_fp(struct tempfile *tempfile);
 extern int close_tempfile_gently(struct tempfile *tempfile);
 
 /*
+ * Flush all modified data to the disk device so that all changed information
+ * can be retrieved even if the system crashes or is rebooted.
+ */
+extern int flush_tempfile(struct tempfile *tempfile);
+
+/*
  * Re-open a temporary file that has been closed using
  * `close_tempfile_gently()` but not yet deleted or renamed. This can be used
  * to implement a sequence of operations like the following:

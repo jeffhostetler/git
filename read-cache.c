@@ -2358,6 +2358,8 @@ static int do_write_index(struct index_state *istate, struct tempfile *tempfile,
 
 	if (ce_flush(&c, newfd, istate->sha1))
 		return -1;
+	if (fsync_object_files)
+		flush_tempfile(tempfile);
 	if (close_tempfile_gently(tempfile)) {
 		error(_("could not close '%s'"), tempfile->filename.buf);
 		return -1;

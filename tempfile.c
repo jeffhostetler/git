@@ -273,6 +273,24 @@ int close_tempfile_gently(struct tempfile *tempfile)
 	return err ? -1 : 0;
 }
 
+int flush_tempfile(struct tempfile *tempfile)
+{
+	int err;
+
+	if (!is_tempfile_active(tempfile) || tempfile->fd < 0) {
+		errno = EBADF;
+		return -1;
+	}
+
+	if (tempfile->fp) {
+		err = fflush(tempfile->fp);
+	} else {
+		err = fsync(tempfile->fd);
+	}
+
+	return err ? -1 : 0;
+}
+
 int reopen_tempfile(struct tempfile *tempfile)
 {
 	if (!is_tempfile_active(tempfile))
