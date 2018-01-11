@@ -1325,7 +1325,11 @@ static int git_default_core_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "core.sparsecheckout")) {
-		core_apply_sparse_checkout = git_config_bool(var, value);
+		/* virtual working directory relies on the sparse checkout logic so force it on */
+		if (core_virtualworkdir)
+			core_apply_sparse_checkout = 1;
+		else
+			core_apply_sparse_checkout = git_config_bool(var, value);
 		return 0;
 	}
 
@@ -2313,6 +2317,32 @@ int git_config_get_index_threads(int *dest)
 	}
 
 	return 1;
+}
+
+int git_config_get_virtualworkdir(void)
+{
+	git_config_get_bool("core.virtualworkdir", &core_virtualworkdir);
+	if (core_virtualworkdir) {
+		/*
+		 * Some git commands spawn helpers and redirect the index to a different
+		 * location.  These include "difftool -d" and the sequencer
+		 * (i.e. `git rebase -i`, `git cherry-pick` and `git revert`) and others.
+		 * In those instances we don't want to update their temporary index with
+		 * our virtualization data.
+		 */
+		char *default_index_file = xstrfmt("%s/%s", the_repository->gitdir, "index");
+		int should_run_hook = !strcmp(default_index_file, the_repository->index_file);
+
+		free(default_index_file);
+		if (should_run_hook) {
+			/* virtual working directory relies on the sparse checkout logic so force it on */
+			core_apply_sparse_checkout = 1;
+			return core_virtualworkdir;
+		}
+		core_virtualworkdir = 0;
+	}
+
+	return core_virtualworkdir;
 }
 
 NORETURN

@@ -68,6 +68,15 @@ core.fsmonitor::
 	avoiding unnecessary processing of files that have not changed.
 	See the "fsmonitor-watchman" section of linkgit:githooks[5].
 
+core.virtualWorkDir::
+	Please regard this as an experimental feature.
+	If set to true, utilize the virtual-work-dir hook to identify all
+	files and directories that are present in the working directory.
+	Git will only track and update files listed in the virtual work
+	directory.  Using the virtual work directory will supersede the
+	sparse-checkout settings which will be ignored.
+	See the "virtual-work-dir" section of linkgit:githooks[6].
+
 core.trustctime::
 	If false, the ctime differences between the index and the
 	working tree are ignored; useful when the inode change time
