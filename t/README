@@ -319,6 +319,9 @@ GIT_TEST_OE_DELTA_SIZE=<n> exercises the uncomon pack-objects code
 path where deltas larger than this limit require extra memory
 allocation for bookkeeping.
 
+GIT_TEST_VIRTUALFILESYSTEM=$PWD/t1092/virtualfilesystem exercises the
+virtual file system code path for limiting what git pays attention to.
+
 Naming Tests
 ------------
 
