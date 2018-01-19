@@ -478,22 +478,12 @@ static void wt_status_collect_changed_cb(struct diff_queue_struct *q,
 
 static int unmerged_mask(const char *path)
 {
-	int pos, mask;
-	const struct cache_entry *ce;
+	struct ngi_unmerged_iter iter;
 
-	pos = index_name_pos(&the_index, path, strlen(path));
-	if (0 <= pos)
+	if (ngi_unmerged_iter__find(&iter, &the_index, path))
 		return 0;
-
-	mask = 0;
-	pos = -pos-1;
-	while (pos < the_index.cache_nr) {
-		ce = the_index.cache[pos++];
-		if (strcmp(ce->name, path) || !ce_stage(ce))
-			break;
-		mask |= (1 << (ce_stage(ce) - 1));
-	}
-	return mask;
+	else
+		return iter.stagemask;
 }
 
 static void wt_status_collect_updated_cb(struct diff_queue_struct *q,
@@ -2087,6 +2077,8 @@ static void wt_porcelain_v2_print_changed_entry(
 	strbuf_release(&buf_head);
 }
 
+static struct object_id oid_zero = { 0 };
+
 /*
  * Print porcelain v2 status info for unmerged entries.
  */
@@ -2094,15 +2086,12 @@ static void wt_porcelain_v2_print_unmerged_entry(
 	struct string_list_item *it,
 	struct wt_status *s)
 {
+	int iter_result;
+	struct ngi_unmerged_iter iter;
 	struct wt_status_change_data *d = it->util;
-	const struct cache_entry *ce;
+	const struct cache_entry *ce_1, *ce_2, *ce_3;
 	struct strbuf buf_index = STRBUF_INIT;
 	const char *path_index = NULL;
-	int pos, stage, sum;
-	struct {
-		int mode;
-		struct object_id oid;
-	} stages[3];
 	char *key;
 	char submodule_token[5];
 	char unmerged_prefix = 'u';
@@ -2126,27 +2115,17 @@ static void wt_porcelain_v2_print_unmerged_entry(
 	 * Disregard d.aux.porcelain_v2 data that we accumulated
 	 * for the head and index columns during the scans and
 	 * replace with the actual stage data.
-	 *
-	 * Note that this is a last-one-wins for each the individual
-	 * stage [123] columns in the event of multiple cache entries
-	 * for same stage.
 	 */
-	memset(stages, 0, sizeof(stages));
-	sum = 0;
-	pos = index_name_pos(&the_index, it->string, strlen(it->string));
-	assert(pos < 0);
-	pos = -pos-1;
-	while (pos < the_index.cache_nr) {
-		ce = the_index.cache[pos++];
-		stage = ce_stage(ce);
-		if (strcmp(ce->name, it->string) || !stage)
-			break;
-		stages[stage - 1].mode = ce->ce_mode;
-		oidcpy(&stages[stage - 1].oid, &ce->oid);
-		sum |= (1 << (stage - 1));
-	}
-	if (sum != d->stagemask)
-		die("BUG: observed stagemask 0x%x != expected stagemask 0x%x", sum, d->stagemask);
+
+	iter_result = ngi_unmerged_iter__find(&iter, &the_index, it->string);
+	if (iter_result)
+		die("BUG: unmerged item not found in index '%s'", it->string);
+	else if (iter.stagemask != d->stagemask)
+		die("BUG: observed stagemask 0x%x != expected stagemask 0x%x",
+		    iter.stagemask, d->stagemask);
+	ce_1 = iter.ce_stages[1];
+	ce_2 = iter.ce_stages[2];
+	ce_3 = iter.ce_stages[3];
 
 	if (s->null_termination)
 		path_index = it->string;
@@ -2154,16 +2133,16 @@ static void wt_porcelain_v2_print_unmerged_entry(
 		path_index = quote_path(it->string, s->prefix, &buf_index);
 
 	fprintf(s->fp, "%c %s %s %06o %06o %06o %06o %s %s %s %s%c",
-			unmerged_prefix, key, submodule_token,
-			stages[0].mode, /* stage 1 */
-			stages[1].mode, /* stage 2 */
-			stages[2].mode, /* stage 3 */
-			d->mode_worktree,
-			oid_to_hex(&stages[0].oid), /* stage 1 */
-			oid_to_hex(&stages[1].oid), /* stage 2 */
-			oid_to_hex(&stages[2].oid), /* stage 3 */
-			path_index,
-			eol_char);
+		unmerged_prefix, key, submodule_token,
+		(ce_1 ? ce_1->ce_mode : 0),
+		(ce_2 ? ce_2->ce_mode : 0),
+		(ce_3 ? ce_3->ce_mode : 0),
+		d->mode_worktree,
+		oid_to_hex(ce_1 ? &ce_1->oid : &oid_zero),
+		oid_to_hex(ce_2 ? &ce_2->oid : &oid_zero),
+		oid_to_hex(ce_3 ? &ce_3->oid : &oid_zero),
+		path_index,
+		eol_char);
 
 	strbuf_release(&buf_index);
 }
