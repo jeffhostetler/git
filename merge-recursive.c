@@ -309,16 +309,14 @@ static int git_merge_trees(int index_only,
 struct tree *write_tree_from_memory(struct merge_options *o)
 {
 	struct tree *result = NULL;
+	struct ngi_unmerged_iter iter;
 
-	if (unmerged_index(&the_index)) {
-		int i;
+	if (ngi_unmerged_iter__begin(&iter, &the_index) == 0) {
 		fprintf(stderr, "BUG: There are unmerged index entries:\n");
-		for (i = 0; i < the_index.cache_nr; i++) {
-			const struct cache_entry *ce = the_index.cache[i];
-			if (ce_stage(ce))
-				fprintf(stderr, "BUG: %d %.*s\n", ce_stage(ce),
-					(int)ce_namelen(ce), ce->name);
-		}
+		do {
+			fprintf(stderr, "BUG: [mask 0x%x] '%s'\n",
+				iter.stagemask, iter.name);
+		} while (ngi_unmerged_iter__next(&iter) == 0);
 		die("BUG: unmerged index entries in merge-recursive.c");
 	}
 
@@ -388,26 +386,27 @@ static struct stage_data *insert_stage_data(const char *path,
  */
 static struct string_list *get_unmerged(void)
 {
+	struct ngi_unmerged_iter iter;
+	struct string_list_item *item;
+	struct stage_data *e;
 	struct string_list *unmerged = xcalloc(1, sizeof(struct string_list));
-	int i;
+	int s;
 
 	unmerged->strdup_strings = 1;
 
-	for (i = 0; i < the_index.cache_nr; i++) {
-		struct string_list_item *item;
-		struct stage_data *e;
-		const struct cache_entry *ce = the_index.cache[i];
-		if (!ce_stage(ce))
-			continue;
-
-		item = string_list_lookup(unmerged, ce->name);
-		if (!item) {
-			item = string_list_insert(unmerged, ce->name);
+	if (ngi_unmerged_iter__begin(&iter, &the_index) == 0) {
+		do {
+			item = string_list_insert(unmerged, iter.name);
 			item->util = xcalloc(1, sizeof(struct stage_data));
-		}
-		e = item->util;
-		e->stages[ce_stage(ce)].mode = ce->ce_mode;
-		oidcpy(&e->stages[ce_stage(ce)].oid, &ce->oid);
+			e = item->util;
+
+			for (s = 1; s < 4; s++) {
+				if (!iter.ce_stages[s])
+					continue;
+				e->stages[s].mode = iter.ce_stages[s]->ce_mode;
+				oidcpy(&e->stages[s].oid, &iter.ce_stages[s]->oid);
+			}
+		} while (ngi_unmerged_iter__next(&iter) == 0);
 	}
 
 	return unmerged;
