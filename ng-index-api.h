@@ -42,4 +42,65 @@
 #undef read_blob_data_from_cache
 #endif
 
+
+/*
+ * We DO NOT define _INIT macros for iterator structures.  The
+ * iterator __begin() and __find() functions will handle all
+ * initialization.
+ */
+
+struct ngi_unmerged_iter {
+	const char *name;
+	struct index_state *index;
+	/*
+	 * cache_entry for stages 1, 2, and 3.
+	 * We waste [0] to avoid accidents.
+	 */
+	struct cache_entry *ce_stages[4];
+	int stagemask;
+
+	struct _private {
+		int pos[4]; /* only [1,2,3] defined */
+
+		/*
+		 * Position in array to look for next item.
+		 */
+		int pos_next;
+	} private;
+};
+
+/*
+ * Initialize an iterator on the given index to iterate through
+ * unmerged entries and search for the first one.
+ *
+ * Returns 0 if an unmerged entry was found.
+ * Returns 1 if not (EOF).
+ */
+extern int ngi_unmerged_iter__begin(struct ngi_unmerged_iter *iter,
+				    struct index_state *index);
+
+/*
+ * Get the next unmerged entry using this iterator.
+ *
+ * Returns 0 if an unmerged entry was found.
+ * Returns 1 if not (EOF).
+ */
+extern int ngi_unmerged_iter__next(struct ngi_unmerged_iter *iter);
+
+/*
+ * Find the unmerged entry with the given pathname.  This will
+ * initialize the iterator.
+ *
+ * Returns 0 if an unmerged entry with that pathname was found.
+ * Returns 1 if not (EOF).
+ */
+extern int ngi_unmerged_iter__find(struct ngi_unmerged_iter *iter,
+				   struct index_state *index,
+				   const char *name);
+
+/*
+ * Helper functions for testing.  See t/helper/test-ng-index-api.c
+ */
+void test__ngi_unmerged_iter(struct index_state *index);
+
 #endif /* NG_INDEX_API_H */
