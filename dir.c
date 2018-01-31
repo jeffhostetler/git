@@ -2287,6 +2287,7 @@ int read_directory(struct dir_struct *dir, struct index_state *istate,
 	}
 
 	if (dir->untracked) {
+		static int force_write = -1;
 		static struct trace_key trace_untracked_stats = TRACE_KEY_INIT(UNTRACKED_STATS);
 		trace_printf_key(&trace_untracked_stats,
 				 "node creation: %u\n"
@@ -2297,7 +2298,10 @@ int read_directory(struct dir_struct *dir, struct index_state *istate,
 				 dir->untracked->gitignore_invalidated,
 				 dir->untracked->dir_invalidated,
 				 dir->untracked->dir_opened);
-		if (dir->untracked == istate->untracked &&
+		if (force_write == -1)
+			force_write = git_env_bool("GIT_FLUSH_UNTRACKED_CACHE", 0);
+		if (force_write &&
+			dir->untracked == istate->untracked &&
 		    (dir->untracked->dir_opened ||
 		     dir->untracked->gitignore_invalidated ||
 		     dir->untracked->dir_invalidated))
