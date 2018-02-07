@@ -80,7 +80,17 @@ test_expect_success 'merge (case change)' '
 	git merge topic
 '
 
-
+test_expect_success CASE_INSENSITIVE_FS 'add directory (with different case)' '
+	git reset --hard initial &&
+	mkdir -p dir1 &&
+	mkdir -p dir1/dir2 &&
+	touch dir1/dir2/a &&
+	touch dir1/dir2/b &&
+	git add dir1/dir2/a &&
+	git add dir1/DIR2/b &&
+	camel=$(git ls-files | grep dir2) &&
+	test $(echo "$camel" | wc -l) = 2
+'
 
 test_expect_failure CASE_INSENSITIVE_FS 'add (with different case)' '
 	git reset --hard initial &&
