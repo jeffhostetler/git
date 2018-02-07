@@ -118,8 +118,12 @@ static int query_fsmonitor(int version, uint64_t last_update, struct strbuf *que
 
 static void fsmonitor_refresh_callback(struct index_state *istate, const char *name)
 {
-	int pos = index_name_pos(istate, name, strlen(name));
+	int pos;
 
+	if (!verify_path(name))
+		return;
+
+	pos = index_name_pos(istate, name, strlen(name));
 	if (pos >= 0) {
 		struct cache_entry *ce = istate->cache[pos];
 		ce->ce_flags &= ~CE_FSMONITOR_VALID;
