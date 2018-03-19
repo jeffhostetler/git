@@ -2608,7 +2608,8 @@ static int do_write_locked_index(struct index_state *istate, struct lock_file *l
 	int ret = do_write_index(istate, lock->tempfile, 0);
 	if (ret)
 		return ret;
-	run_hook_le(NULL, "post-indexchanged", istate->updated_workdir ? "1" : "0", NULL);
+	if (istate->updated_workdir || istate->reset_mixed)
+		run_hook_le(NULL, "projectionChanged", istate->updated_workdir ? "1" : "0", istate->reset_mixed ? "1" : "0", NULL);
 	if (flags & COMMIT_LOCK)
 		return commit_locked_index(lock);
 	return close_lock_file_gently(lock);
