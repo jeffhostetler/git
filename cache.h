@@ -15,6 +15,7 @@
 #include "path.h"
 #include "sha1-array.h"
 #include "repository.h"
+#include "telemetry.h"
 
 #ifndef platform_SHA_CTX
 /*

@@ -27,13 +27,26 @@ static NORETURN void usage_builtin(const char *err, va_list params)
 
 static NORETURN void die_builtin(const char *err, va_list params)
 {
+	va_list copy_params;
+	va_copy(copy_params, params);
+
 	vreportf("fatal: ", err, params);
+
+	telemetry_set_errmsg("fatal: ", err, copy_params);
+	va_end(copy_params);
+
 	exit(128);
 }
 
 static void error_builtin(const char *err, va_list params)
 {
+	va_list copy_params;
+	va_copy(copy_params, params);
+
 	vreportf("error: ", err, params);
+
+	telemetry_set_errmsg("fatal: ", err, copy_params);
+	va_end(copy_params);
 }
 
 static void warn_builtin(const char *warn, va_list params)

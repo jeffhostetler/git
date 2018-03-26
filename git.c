@@ -280,6 +280,8 @@ static int handle_alias(int *argcp, const char ***argv)
 		*argv = new_argv;
 		*argcp += count - 1;
 
+		telemetry_alias_event(*argcp, new_argv);
+
 		ret = 1;
 	}
 
@@ -636,6 +638,7 @@ int cmd_main(int argc, const char **argv)
 			cmd = slash + 1;
 	}
 
+	telemetry_start_event(argc, argv);
 	trace_command_performance(argv);
 
 	/*
@@ -699,5 +702,5 @@ int cmd_main(int argc, const char **argv)
 	fprintf(stderr, "Failed to run command '%s': %s\n",
 		cmd, strerror(errno));
 
-	return 1;
+	return telemetry_exit_event(1);
 }
