@@ -21,6 +21,7 @@ static struct json_writer jw_alias = JSON_WRITER_INIT;
 static struct json_writer jw_argv = JSON_WRITER_INIT;
 static struct json_writer jw_errmsg = JSON_WRITER_INIT;
 static struct json_writer jw_exit = JSON_WRITER_INIT;
+static struct json_writer jw_branch = JSON_WRITER_INIT;
 
 /*
  * Compute elapsed time in seconds.
@@ -170,6 +171,8 @@ static inline void format_exit_event(struct json_writer *jw)
 	/* terminate any in-progress data collections */
 	if (jw_errmsg.json.len)
 		jw_end(&jw_errmsg);
+	if (!jw_is_terminated(&jw_branch))
+		jw_end(&jw_branch);
 
 	/* build JSON message to describe our exit state */
 	jw_init(jw);
@@ -188,6 +191,9 @@ static inline void format_exit_event(struct json_writer *jw)
 				 elapsed(my_ns_exit, my_ns_start));
 		if (jw_errmsg.json.len)
 			jw_object_sub_jw(jw, "error-message", &jw_errmsg);
+
+		if (jw_branch.json.len)
+			jw_object_sub_jw(jw, "branches", &jw_branch);
 
 		jw_object_string(jw, "sid", our_sid.buf);
 		if (parent_sid.len)
@@ -211,6 +217,7 @@ static void my_atexit(void)
 	jw_release(&jw_argv);
 	jw_release(&jw_errmsg);
 	jw_release(&jw_exit);
+	jw_release(&jw_branch);
 }
 
 static inline void format_start_event(struct json_writer *jw)
@@ -263,6 +270,23 @@ void telemetry_start_event(int argc, const char **argv)
 }
 
 /*
+ * Collect optional fields for the "exit" event.
+ * We should only do this when it is safe to do so.
+ */
+static inline void collect_optional_exit_fields(void)
+{
+	/*
+	 * If the command failed for any reason, we just give up because we
+	 * do not know the state of the process and any data structures.
+	 * We have to assume someone called die() and gave up.
+	 */
+	if (my_exit_code)
+		return;
+
+	telemetry_set_branch("HEAD");
+}
+
+/*
  * Record our exit code (or the return code about to be returned from main())
  * and time so we can later write an "exit" event during atexit().
  */
@@ -273,6 +297,8 @@ int telemetry_exit_event(int exit_code)
 
 	my_ns_exit = getnanotime();
 	my_exit_code = exit_code;
+
+	collect_optional_exit_fields();
 
 	return exit_code;
 }
@@ -400,4 +426,102 @@ void telemetry_alias_event(uint64_t ns_start, int pid, const char **argv,
 	jw_array_begin(&jw_alias, 0);
 	jw_array_argv(&jw_alias, argv);
 	jw_end(&jw_alias);
+}
+
+/*
+ * Capture information for the current branch, remote, and upstream for
+ * later logging.
+ *
+ * We build an array of branches in case the caller wants to log
+ * before and after data around a checkout, for example.
+ *
+ * Warning: calling branch_get() causes remote.c:read_config() to eventually
+ * get called and this has a static "loaded" flag to prevent its internal
+ * cache from being loaded twice.  If we call this routine BEFORE the cmd_*()
+ * routine is called (say prior to "p->fn()" in git.c), then the remotes and
+ * branches get loaded into their cache before the comman runs and alters the
+ * behavior of some commands (like "git clone --bare . ./foo") that expect to
+ * modify the repo and then do the lookups and build the cache.  This causes,
+ * for example, "git clone --bare . ./foo" to invoke "git-upload-pack origin"
+ * rather than "git-upload-pack <full-path>/." and fails.
+ *
+ * Warning: If we call this AFTERWARDS (as we are capturing the exit/return
+ * code, we run the risk of getting slightly stale data.  If the cmd_*() did
+ * not call branch_get() our request will get fresh data, but if the cmd_*()
+ * did something to the disk after calling branch_get() it may not update the
+ * cache (since it usually assumes it going to immediately exit and doesn't
+ * need to bother), so we may get slightly stale results.
+ *
+ * So, my point is that we should be careful when we call this in various
+ * cmd_*() routines.
+ *
+ * Note: Some of this information may be sensitive (personally identifiable)
+ * so we may want to scrub or conditionally omit it.
+ */
+void telemetry_set_branch(const char *branch_name)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+	struct branch *branch = NULL;
+	struct remote *remote = NULL;
+	const char *upstream_refname = NULL;
+	struct object_id oid_branch;
+	struct object_id oid_upstream;
+
+	if (my_config_telemetry < 1)
+		return;
+
+	branch = branch_get(branch_name);
+	if (!branch)
+		return;
+	if (branch->remote_name)
+		remote = remote_get(branch->remote_name);
+	upstream_refname = branch_get_upstream(branch, NULL);
+
+	jw_object_begin(&jw, my_config_telemetry_pretty);
+	{
+		jw_object_inline_begin_object(&jw, "branch");
+		{
+			jw_object_string(&jw, "name", branch->name);
+			jw_object_string(&jw, "refname", branch->refname);
+
+			if (!get_oid_commit(branch->refname, &oid_branch))
+				jw_object_string(&jw, "oid",
+						 oid_to_hex(&oid_branch));
+		}
+		jw_end(&jw);
+
+		if (branch->remote_name) {
+			jw_object_inline_begin_object(&jw, "remote");
+			{
+				jw_object_string(&jw, "name",
+						 branch->remote_name);
+				if (remote && remote->url_nr)
+					jw_object_string(&jw, "url",
+							 remote->url[0]);
+			}
+			jw_end(&jw);
+		}
+		
+		if (upstream_refname) {
+			jw_object_inline_begin_object(&jw, "upstream");
+			{
+				jw_object_string(&jw, "refname",
+						 upstream_refname);
+				if (!get_oid_commit(upstream_refname,
+						    &oid_upstream))
+					jw_object_string(
+						&jw, "oid",
+						oid_to_hex(&oid_upstream));
+			}
+			jw_end(&jw);
+		}
+	}
+	jw_end(&jw);
+
+	if (!jw_branch.json.len)
+		jw_array_begin(&jw_branch, my_config_telemetry_pretty);
+	jw_array_sub_jw(&jw_branch, &jw);
+	/* leave branches array unterminated for now */
+
+	jw_release(&jw);
 }
