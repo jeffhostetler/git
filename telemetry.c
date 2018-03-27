@@ -267,56 +267,6 @@ int telemetry_exit_event(int exit_code)
 	return exit_code;
 }
 
-static inline void format_alias_event(struct json_writer *jw)
-{
-	/* build JSON message to describe our initial state */
-	jw_init(jw);
-	jw_object_begin(jw, 0);
-	{
-		jw_object_string(jw, "event", "alias");
-		jw_object_intmax(jw, "time", (intmax_t)my_ns_start);
-		jw_object_intmax(jw, "pid", my_pid);
-
-		jw_object_sub_jw(jw, "argv", &jw_argv);
-		if (jw_alias.json.len)
-			jw_object_sub_jw(jw, "alias", &jw_alias);
-
-		jw_object_string(jw, "sid", our_sid.buf);
-		if (parent_sid.len)
-			jw_object_string(jw, "parent-sid", parent_sid.buf);
-
-		jw_object_string(jw, "version", git_version_string);
-	}
-	jw_end(jw);
-}
-
-/*
- * Record an alias expansion and emit an "alias" event.  This event is minimal
- * like the "start" event and mainly intended to allow watchers to see when an
- * important command (such as checkout) starts.
- */
-void telemetry_alias_event(int argc, const char **argv)
-{
-	struct json_writer jw = JSON_WRITER_INIT;
-
-	if (my_config_telemetry < 1)
-		return;
-
-	/*
-	 * Discard any previous alias expansion since we only care about the
-	 * net-net final expansion (when we have nested aliases).
-	 */
-	jw_init(&jw_alias);
-
-	jw_array_begin(&jw_alias, 0);
-	jw_array_argc_argv(&jw_alias, argc, argv);
-	jw_end(&jw_alias);
-
-	format_alias_event(&jw);
-	my_emit_event(&jw);
-	jw_release(&jw);
-}
-
 /*
  * Accumulate an unbounded JSON array of error messages in the order received.
  * This will be included in the final "exit" event.
@@ -339,4 +289,105 @@ void telemetry_set_errmsg(const char *prefix, const char *fmt, va_list ap)
 	/* leave the errmsg array unterminated for now */
 
 	strbuf_release(&em);
+}
+
+/*
+ * Format an event message for any type of child process exit.
+ */
+static inline void format_child_event(const char *type, struct json_writer *jw,
+				      uint64_t ns_start, int pid,
+				      const char **argv, int exit_code)
+{
+	uint64_t ns_end = getnanotime();
+
+	/* build JSON message to describe the child process */
+	jw_init(jw);
+	jw_object_begin(jw, 0);
+	{
+		jw_object_string(jw, "event", type);
+		jw_object_intmax(jw, "time", (intmax_t)ns_end);
+		jw_object_intmax(jw, "pid", my_pid);
+
+		jw_object_string(jw, "sid", our_sid.buf);
+		if (parent_sid.len)
+			jw_object_string(jw, "parent-sid", parent_sid.buf);
+
+		jw_object_inline_begin_object(jw, "child");
+		{
+			jw_object_intmax(jw, "pid", pid);
+			jw_object_intmax(jw, "exit-code", exit_code);
+			jw_object_double(jw, "elapsed-time", 6,
+					 elapsed(ns_end, ns_start));
+
+			jw_object_inline_begin_array(jw, "argv");
+			{
+				jw_array_argv(jw, argv);
+			}
+			jw_end(jw);
+		}
+		jw_end(jw);
+
+		jw_object_string(jw, "version", git_version_string);
+	}
+	jw_end(jw);
+}
+
+/*
+ * Record child process exit event for unclassified children.
+ */
+void telemetry_child_event(uint64_t ns_start, int pid, const char **argv,
+			   int exit_code)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+
+	if (my_config_telemetry < 1)
+		return;
+
+	format_child_event("child", &jw, ns_start, pid, argv, exit_code);
+	my_emit_event(&jw);
+	jw_release(&jw);
+}
+
+/*
+ * Record child process exit for a hook process.
+ */
+void telemetry_hook_event(uint64_t ns_start, int pid, const char **argv,
+			  int exit_code)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+
+	if (my_config_telemetry < 1)
+		return;
+
+	format_child_event("hook", &jw, ns_start, pid, argv, exit_code);
+	my_emit_event(&jw);
+	jw_release(&jw);
+}
+
+/*
+ * Record child process exit for an alias-expansion process.
+ */
+void telemetry_alias_event(uint64_t ns_start, int pid, const char **argv,
+			  int exit_code)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+
+	if (my_config_telemetry < 1)
+		return;
+
+	format_child_event("alias", &jw, ns_start, pid, argv, exit_code);
+	my_emit_event(&jw);
+	jw_release(&jw);
+
+	/*
+	 * Also capture the alias expansion for later reporting in the exit
+	 * event for the current process.  Discard any previous alias expansion
+	 * since we only care about the net-net final expansion (when we have
+	 * nested aliases).
+	 */
+	jw_init(&jw_alias);
+
+	jw_array_begin(&jw_alias, 0);
+	jw_array_argv(&jw_alias, argv);
+	jw_end(&jw_alias);
 }

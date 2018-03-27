@@ -12,6 +12,7 @@ struct child_process {
 	struct argv_array args;
 	struct argv_array env_array;
 	pid_t pid;
+	uint64_t ns_start;
 	/*
 	 * Using .in, .out, .err:
 	 * - Specify 0 for no redirections (child inherits stdin, stdout,
@@ -44,6 +45,8 @@ struct child_process {
 	unsigned use_shell:1;
 	unsigned clean_on_exit:1;
 	unsigned wait_after_clean:1;
+	unsigned is_hook:1;
+	unsigned is_alias_expansion:1;
 	void (*clean_on_exit_handler)(struct child_process *process);
 	void *clean_on_exit_handler_cbdata;
 };

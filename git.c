@@ -242,6 +242,7 @@ static int handle_alias(int *argcp, const char ***argv)
 			child.use_shell = 1;
 			argv_array_push(&child.args, alias_string + 1);
 			argv_array_pushv(&child.args, (*argv) + 1);
+			child.is_alias_expansion = 1;
 
 			ret = run_command(&child);
 			if (ret >= 0)   /* normal exit */
@@ -279,8 +280,6 @@ static int handle_alias(int *argcp, const char ***argv)
 
 		*argv = new_argv;
 		*argcp += count - 1;
-
-		telemetry_alias_event(*argcp, new_argv);
 
 		ret = 1;
 	}
@@ -574,6 +573,7 @@ static void execv_dashed_external(const char **argv)
 	cmd.clean_on_exit = 1;
 	cmd.wait_after_clean = 1;
 	cmd.silent_exec_failure = 1;
+	cmd.is_alias_expansion = 1;
 
 	trace_argv_printf(cmd.args.argv, "trace: exec:");
 
