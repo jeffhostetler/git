@@ -13,6 +13,9 @@ static pid_t    my_pid;
 static uint64_t my_ns_start;
 static uint64_t my_ns_exit;
 
+static struct strbuf our_sid = STRBUF_INIT;
+static struct strbuf parent_sid = STRBUF_INIT;
+
 static struct json_writer jw_alias = JSON_WRITER_INIT;
 static struct json_writer jw_argv = JSON_WRITER_INIT;
 static struct json_writer jw_errmsg = JSON_WRITER_INIT;
@@ -25,6 +28,62 @@ static struct json_writer jw_exit = JSON_WRITER_INIT;
 static inline double elapsed(uint64_t ns_end, uint64_t ns_start)
 {
 	return (double)(ns_end - ns_start)/1000000000;
+}
+
+/*
+ * If we inherited a parent-SID, we are a sub-command.  It is important
+ * that we lookup any SID from the environment before compute_our_sid()
+ * overwrites the environment variable.
+ */
+static int is_subcommand(void)
+{
+	static int computed = 0;
+	const char *parent;
+
+	if (computed)
+		return parent_sid.len != 0;
+	computed = 1;
+
+	parent = getenv("GIT_TELEMETRY_PARENT_SID");
+	if (!parent || !*parent)
+		return 0;
+
+	strbuf_addstr(&parent_sid, parent);
+	return 1;
+}
+
+/*
+ * Compute a new SID for the current process.
+ */
+static void compute_our_sid(void)
+{
+	/*
+	 * A "session id" (SID) is a cheap, unique-enough string to associate
+	 * a parent process with its child processes.  This is stronger than
+	 * a simple parent-pid because we may have an intermediate shell
+	 * between a top-level Git command and a child Git command.
+	 *
+	 * This could be a UUID/GUID, but that requires extra library
+	 * dependencies, is more expensive to compute, and overkill for our
+	 * needs.  We just need enough uniqueness to associate a parent and
+	 * child process in a telemetry dump (possibly when aggregated over
+	 * a long time span or across multiple machines).
+	 *
+	 * A PID and a nanosecond timestamp should be sufficient for this.
+	 *
+	 * Consumers should consider this an unordered opaque string in case
+	 * we decide to switch to a real UUID in the future.
+	 */
+	strbuf_addf(&our_sid, "%"PRIuMAX"-%d", (uintmax_t)my_ns_start, my_pid);
+
+	/*
+	 * If we DID NOT inherit a parent-SID, export our new SID to the
+	 * environment so that any child processes descended from us will see
+	 * it.  (We want the parent-SID that they see to be the top-most git
+	 * process so that we can see the full cost of the top-level command.)
+	 */
+	if (!is_subcommand())
+		setenv("GIT_TELEMETRY_PARENT_SID", our_sid.buf, 1);
 }
 
 /*
@@ -120,6 +179,10 @@ static inline void format_exit_event(struct json_writer *jw)
 		if (jw_errmsg.json.len)
 			jw_object_sub_jw(jw, "error-message", &jw_errmsg);
 
+		jw_object_string(jw, "sid", our_sid.buf);
+		if (parent_sid.len)
+			jw_object_string(jw, "parent-sid", parent_sid.buf);
+
 		jw_object_string(jw, "version", git_version_string);
 	}
 	jw_end(jw);
@@ -131,6 +194,9 @@ static void my_atexit(void)
 		format_exit_event(&jw_exit);
 		my_emit_event(&jw_exit);
 	}
+
+	strbuf_release(&our_sid);
+	strbuf_release(&parent_sid);
 
 	jw_release(&jw_argv);
 	jw_release(&jw_errmsg);
@@ -148,6 +214,10 @@ static inline void format_start_event(struct json_writer *jw)
 		jw_object_intmax(jw, "pid", my_pid);
 
 		jw_object_sub_jw(jw, "argv", &jw_argv);
+
+		jw_object_string(jw, "sid", our_sid.buf);
+		if (parent_sid.len)
+			jw_object_string(jw, "parent-sid", parent_sid.buf);
 
 		jw_object_string(jw, "version", git_version_string);
 	}
@@ -171,6 +241,7 @@ void telemetry_start_event(int argc, const char **argv)
 		return;
 
 	atexit(my_atexit);
+	compute_our_sid();
 
 	jw_array_begin(&jw_argv, 0);
 	jw_array_argc_argv(&jw_argv, argc, argv);
@@ -209,6 +280,10 @@ static inline void format_alias_event(struct json_writer *jw)
 		jw_object_sub_jw(jw, "argv", &jw_argv);
 		if (jw_alias.json.len)
 			jw_object_sub_jw(jw, "alias", &jw_alias);
+
+		jw_object_string(jw, "sid", our_sid.buf);
+		if (parent_sid.len)
+			jw_object_string(jw, "parent-sid", parent_sid.buf);
 
 		jw_object_string(jw, "version", git_version_string);
 	}
