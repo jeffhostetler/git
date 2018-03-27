@@ -7,6 +7,7 @@
 
 static int         my_config_telemetry = -1; /* -1 means unspecified, defaults to off */
 static const char *my_config_telemetry_path; /* use stderr if null and no provider */
+static int         my_config_telemetry_pretty; /* pretty print telemetry data (debug) */
 
 static int      my_exit_code = -1;
 static pid_t    my_pid;
@@ -126,6 +127,12 @@ static inline int config_telemetry(const char *var, const char *value)
 	return 0;
 }
 
+static inline int config_telemetrypretty(const char *var, const char *value)
+{
+	my_config_telemetry_pretty = git_config_bool(var, value);
+	return 0;
+}
+
 static inline int config_telemetrypath(const char *var, const char *value)
 {
 	if (is_absolute_path(value)) {
@@ -147,6 +154,9 @@ static int config_cb(const char *key, const char *value, void *d)
 		return config_telemetry(key, value);
 	if (!strcmp(key, "telemetry.path"))
 		return config_telemetrypath(key, value);
+	if (!strcmp(key, "telemetry.pretty"))
+		return config_telemetrypretty(key, value);
+
 	return 0;
 }
 
@@ -163,7 +173,7 @@ static inline void format_exit_event(struct json_writer *jw)
 
 	/* build JSON message to describe our exit state */
 	jw_init(jw);
-	jw_object_begin(jw, 0);
+	jw_object_begin(jw, my_config_telemetry_pretty);
 	{
 		jw_object_string(jw, "event", "exit");
 		jw_object_intmax(jw, "time", (intmax_t)my_ns_exit);
@@ -207,7 +217,7 @@ static inline void format_start_event(struct json_writer *jw)
 {
 	/* build JSON message to describe our initial state */
 	jw_init(jw);
-	jw_object_begin(jw, 0);
+	jw_object_begin(jw, my_config_telemetry_pretty);
 	{
 		jw_object_string(jw, "event", "start");
 		jw_object_intmax(jw, "time", (intmax_t)my_ns_start);
@@ -243,7 +253,7 @@ void telemetry_start_event(int argc, const char **argv)
 	atexit(my_atexit);
 	compute_our_sid();
 
-	jw_array_begin(&jw_argv, 0);
+	jw_array_begin(&jw_argv, my_config_telemetry_pretty);
 	jw_array_argc_argv(&jw_argv, argc, argv);
 	jw_end(&jw_argv);
 
@@ -283,7 +293,7 @@ void telemetry_set_errmsg(const char *prefix, const char *fmt, va_list ap)
 	strbuf_vaddf(&em, fmt, ap);
 
 	if (!jw_errmsg.json.len)
-		jw_array_begin(&jw_errmsg, 0);
+		jw_array_begin(&jw_errmsg, my_config_telemetry_pretty);
 
 	jw_array_string(&jw_errmsg, em.buf);
 	/* leave the errmsg array unterminated for now */
@@ -302,7 +312,7 @@ static inline void format_child_event(const char *type, struct json_writer *jw,
 
 	/* build JSON message to describe the child process */
 	jw_init(jw);
-	jw_object_begin(jw, 0);
+	jw_object_begin(jw, my_config_telemetry_pretty);
 	{
 		jw_object_string(jw, "event", type);
 		jw_object_intmax(jw, "time", (intmax_t)ns_end);
