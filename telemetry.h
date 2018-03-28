@@ -13,5 +13,6 @@ int  telemetry_exit_event(int exit_code);
 
 void telemetry_set_errmsg(const char *prefix, const char *fmt, va_list ap);
 void telemetry_set_branch(const char *branch_name);
+void telemetry_set_repository(void);
 
 #endif /* TELEMETRY_H */

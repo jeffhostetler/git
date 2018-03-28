@@ -22,6 +22,7 @@ static struct json_writer jw_argv = JSON_WRITER_INIT;
 static struct json_writer jw_errmsg = JSON_WRITER_INIT;
 static struct json_writer jw_exit = JSON_WRITER_INIT;
 static struct json_writer jw_branch = JSON_WRITER_INIT;
+static struct json_writer jw_repo = JSON_WRITER_INIT;
 
 /*
  * Compute elapsed time in seconds.
@@ -195,6 +196,9 @@ static inline void format_exit_event(struct json_writer *jw)
 		if (jw_branch.json.len)
 			jw_object_sub_jw(jw, "branches", &jw_branch);
 
+		if (jw_repo.json.len)
+			jw_object_sub_jw(jw, "repo", &jw_repo);
+
 		jw_object_string(jw, "sid", our_sid.buf);
 		if (parent_sid.len)
 			jw_object_string(jw, "parent-sid", parent_sid.buf);
@@ -218,6 +222,7 @@ static void my_atexit(void)
 	jw_release(&jw_errmsg);
 	jw_release(&jw_exit);
 	jw_release(&jw_branch);
+	jw_release(&jw_repo);
 }
 
 static inline void format_start_event(struct json_writer *jw)
@@ -284,6 +289,8 @@ static inline void collect_optional_exit_fields(void)
 		return;
 
 	telemetry_set_branch("HEAD");
+
+	telemetry_set_repository();
 }
 
 /*
@@ -524,4 +531,35 @@ void telemetry_set_branch(const char *branch_name)
 	/* leave branches array unterminated for now */
 
 	jw_release(&jw);
+}
+
+/*
+ * Capture information about the repository and the working directory for
+ * later logging.
+ *
+ * Warning: we cannot call this until "the_repository" has been initialized.
+ * See environment.c:get_git_dir().
+ *
+ * Note: Some of this information may be sensitive (personally identifiable)
+ * so we may want to scrub or conditionally omit it.
+ */
+void telemetry_set_repository(void)
+{
+	if (my_config_telemetry < 1)
+		return;
+
+	if (!have_git_dir())
+		return;
+
+	jw_object_begin(&jw_repo, my_config_telemetry_pretty);
+	{
+		jw_object_intmax(&jw_repo, "bare", is_bare_repository());
+		jw_object_string(&jw_repo, "git-dir",
+				 absolute_path(get_git_dir()));
+
+		if (get_git_work_tree())
+			jw_object_string(&jw_repo, "worktree",
+					 get_git_work_tree());
+	}
+	jw_end(&jw_repo);
 }
