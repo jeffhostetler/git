@@ -166,24 +166,24 @@ test_expect_success 'nested inline object and array 2' '
 '
 
 test_expect_success 'pretty nested inline object and array 2' '
-	cat >expect <<EOF &&
-{
-  "a": "abc",
-  "b": 42,
-  "sub1": {
-    "c": 3.14,
-    "d": true,
-    "sub2": [
-      false,
-      {
-        "g": 0,
-        "h": 1
-      },
-      null
-    ]
-  }
-}
-EOF
+	sed -e "s/^|//" >expect <<-\EOF &&
+	|{
+	|  "a": "abc",
+	|  "b": 42,
+	|  "sub1": {
+	|    "c": 3.14,
+	|    "d": true,
+	|    "sub2": [
+	|      false,
+	|      {
+	|        "g": 0,
+	|        "h": 1
+	|      },
+	|      null
+	|    ]
+	|  }
+	|}
+	EOF
 	test-json-writer >actual \
 		--pretty \
 		@object \
