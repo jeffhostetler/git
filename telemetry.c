@@ -23,11 +23,11 @@
 /* want telemetry for sub-commands */
 #define TELEMETRY_MASK__SUBCOMMANDS             UINTMAX_C(1 << 20)
 
-
 static int         my_config_telemetry = -1; /* -1 means unspecified, defaults to off */
 static const char *my_config_telemetry_path; /* use stderr if null and no provider */
 static int         my_config_telemetry_pretty; /* pretty print telemetry data (debug) */
 static uintmax_t   my_config_telemetry_mask = TELEMETRY_MASK__NONE;
+static enum telemetry_perf_token my_config_telemetry_perf = TELEMETRY_PERF__NONE;
 
 static int      my_exit_code = -1;
 static pid_t    my_pid;
@@ -47,6 +47,11 @@ static struct json_writer jw_repo = JSON_WRITER_INIT;
 static inline int mask_want(uintmax_t b)
 {
 	return !!(my_config_telemetry_mask & b);
+}
+
+int telemetry_perf_want(enum telemetry_perf_token t)
+{
+	return !!(my_config_telemetry_perf & t);
 }
 
 /*
@@ -215,6 +220,44 @@ static inline int config_telemetrymask(const char *var, const char *value)
 	return 0;
 }
 
+/*
+ * Parse the value of perf flags and set individual bits.  It should either
+ * be a boolean value (meaning all or none) or a list of words (with or
+ * without delimiters) of the tokens to turn on.
+ */
+static inline int config_telemetryperf(const char *var, const char *value)
+{
+	int bool_value = git_parse_maybe_bool(value);
+
+	if (bool_value == 1) {
+		my_config_telemetry_perf = TELEMETRY_PERF__ALL;
+		return 0;
+	}
+	if (bool_value == 0) {
+		my_config_telemetry_perf = TELEMETRY_PERF__NONE;
+		return 0;
+	}
+
+	my_config_telemetry_perf = TELEMETRY_PERF__NONE;
+
+	if (strstr(value, "index"))
+		my_config_telemetry_perf |= TELEMETRY_PERF__INDEX;
+
+	return 0;
+}
+
+static const char *token_name(enum telemetry_perf_token token)
+{
+	switch (token)
+	{
+	case TELEMETRY_PERF__INDEX:
+		return "index";
+
+	default:
+		return "default";
+	}
+}
+
 static int config_cb(const char *key, const char *value, void *d)
 {
 	if (!strcmp(key, "telemetry.enable"))
@@ -225,6 +268,8 @@ static int config_cb(const char *key, const char *value, void *d)
 		return config_telemetrypretty(key, value);
 	if (!strcmp(key, "telemetry.mask"))
 		return config_telemetrymask(key, value);
+	if (!strcmp(key, "telemetry.perf"))
+		return config_telemetryperf(key, value);
 
 	return 0;
 }
@@ -654,4 +699,48 @@ void telemetry_set_repository(void)
 					 get_git_work_tree());
 	}
 	jw_end(&jw_repo);
+}
+
+void telemetry_perf_event(uint64_t ns_start, enum telemetry_perf_token token,
+			  const char *label, const struct json_writer *jw_data)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+	uint64_t ns_end;
+	const char *tn;
+
+	if (my_config_telemetry < 1)
+		return;
+
+	if (!telemetry_perf_want(token))
+		return;
+
+	ns_end = getnanotime();
+	tn = token_name(token);
+
+	if (!jw_is_terminated(jw_data))
+		die("telemetry_perf_event[%s/%s]: unterminated data: %s",
+		    tn, label, jw_data->json.buf);
+
+	jw_object_begin(&jw, my_config_telemetry_pretty);
+	{
+		jw_object_string(&jw, "event", "perf");
+		jw_object_string(&jw, "token", tn);
+		jw_object_string(&jw, "label", label);
+		jw_object_intmax(&jw, "pid", my_pid);
+
+		jw_object_double(&jw, "elapsed-time", 6,
+				 elapsed(ns_end, ns_start));
+
+		jw_object_sub_jw(&jw, "data", jw_data);
+
+		jw_object_string(&jw, "sid", our_sid.buf);
+		if (parent_sid.len)
+			jw_object_string(&jw, "parent-sid", parent_sid.buf);
+
+		jw_object_string(&jw, "version", git_version_string);
+	}
+	jw_end(&jw);
+
+	my_emit_event(&jw);
+	jw_release(&jw);
 }

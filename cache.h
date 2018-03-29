@@ -15,7 +15,9 @@
 #include "path.h"
 #include "sha1-array.h"
 #include "repository.h"
+#include "json-writer.h"
 #include "telemetry.h"
+#include "telemetry-perf.h"
 
 #ifndef platform_SHA_CTX
 /*

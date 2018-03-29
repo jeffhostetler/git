@@ -1774,6 +1774,7 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	void *mmap;
 	size_t mmap_size;
 	struct strbuf previous_name_buf = STRBUF_INIT, *previous_name;
+	uint64_t ns_start = getnanotime();
 
 	if (istate->initialized)
 		return istate->cache_nr;
@@ -1850,6 +1851,9 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 		src_offset += extsize;
 	}
 	munmap(mmap, mmap_size);
+
+	telemetry_perf__do_read_index(ns_start, path, istate);
+
 	return istate->cache_nr;
 
 unmap:
