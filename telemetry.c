@@ -5,9 +5,29 @@
 #include "remote.h"
 #include "json-writer.h"
 
+/* no optional events and no options fields in fixed events */
+#define TELEMETRY_MASK__NONE                    UINTMAX_C(0)
+/* all optional events and all optional fields in all events */
+#define TELEMETRY_MASK__ALL                     UINTMAX_MAX
+
+/* these events are optional. */
+#define TELEMETRY_MASK__ALIAS_EVENTS            UINTMAX_C(1 <<  1)
+#define TELEMETRY_MASK__CHILD_EVENTS            UINTMAX_C(1 <<  2)
+#define TELEMETRY_MASK__HOOK_EVENTS             UINTMAX_C(1 <<  3)
+#define TELEMETRY_MASK__START_EVENTS            UINTMAX_C(1 <<  4)
+
+/* optional per-event fields */
+#define TELEMETRY_MASK__EXIT__BRANCH            UINTMAX_C(1 << 10)
+#define TELEMETRY_MASK__EXIT__REPO              UINTMAX_C(1 << 11)
+
+/* want telemetry for sub-commands */
+#define TELEMETRY_MASK__SUBCOMMANDS             UINTMAX_C(1 << 20)
+
+
 static int         my_config_telemetry = -1; /* -1 means unspecified, defaults to off */
 static const char *my_config_telemetry_path; /* use stderr if null and no provider */
 static int         my_config_telemetry_pretty; /* pretty print telemetry data (debug) */
+static uintmax_t   my_config_telemetry_mask = TELEMETRY_MASK__NONE;
 
 static int      my_exit_code = -1;
 static pid_t    my_pid;
@@ -23,6 +43,11 @@ static struct json_writer jw_errmsg = JSON_WRITER_INIT;
 static struct json_writer jw_exit = JSON_WRITER_INIT;
 static struct json_writer jw_branch = JSON_WRITER_INIT;
 static struct json_writer jw_repo = JSON_WRITER_INIT;
+
+static inline int mask_want(uintmax_t b)
+{
+	return !!(my_config_telemetry_mask & b);
+}
 
 /*
  * Compute elapsed time in seconds.
@@ -150,6 +175,46 @@ static inline int config_telemetrypath(const char *var, const char *value)
 	return 0;
 }
 
+/*
+ * Parse the value of mask and set individual bits.  It should be either a
+ * boolean value (meaning all or no optional data) or a list of words (with
+ * or without delimiters of bits to turn on).
+ */
+static inline int config_telemetrymask(const char *var, const char *value)
+{
+	int bool_value = git_parse_maybe_bool(value);
+
+	if (bool_value == 1) {
+		my_config_telemetry_mask = TELEMETRY_MASK__ALL;
+		return 0;
+	}
+	if (bool_value == 0) {
+		my_config_telemetry_mask = TELEMETRY_MASK__NONE;
+		return 0;
+	}
+
+	my_config_telemetry_mask = TELEMETRY_MASK__NONE;
+
+	if (strstr(value, "alias"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__ALIAS_EVENTS;
+	if (strstr(value, "child"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__CHILD_EVENTS;
+	if (strstr(value, "hook"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__HOOK_EVENTS;
+	if (strstr(value, "start"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__START_EVENTS;
+
+	if (strstr(value, "exit-branch"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__EXIT__BRANCH;
+	if (strstr(value, "exit-repo"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__EXIT__REPO;
+
+	if (strstr(value, "subcommand"))
+		my_config_telemetry_mask |= TELEMETRY_MASK__SUBCOMMANDS;
+
+	return 0;
+}
+
 static int config_cb(const char *key, const char *value, void *d)
 {
 	if (!strcmp(key, "telemetry.enable"))
@@ -158,6 +223,8 @@ static int config_cb(const char *key, const char *value, void *d)
 		return config_telemetrypath(key, value);
 	if (!strcmp(key, "telemetry.pretty"))
 		return config_telemetrypretty(key, value);
+	if (!strcmp(key, "telemetry.mask"))
+		return config_telemetrymask(key, value);
 
 	return 0;
 }
@@ -263,11 +330,25 @@ void telemetry_start_event(int argc, const char **argv)
 		return;
 
 	atexit(my_atexit);
+
+	/*
+	 * If this is not a top-level command and the user doesn't want
+	 * telemetry for sub-commands, quietly turn off telemetry for
+	 * this sub-command.
+	 */
+	if (!mask_want(TELEMETRY_MASK__SUBCOMMANDS) && is_subcommand()) {
+		my_config_telemetry = 0;
+		return;
+	}
+
 	compute_our_sid();
 
 	jw_array_begin(&jw_argv, my_config_telemetry_pretty);
 	jw_array_argc_argv(&jw_argv, argc, argv);
 	jw_end(&jw_argv);
+
+	if (!mask_want(TELEMETRY_MASK__START_EVENTS))
+		return;
 
 	format_start_event(&jw);
 	my_emit_event(&jw);
@@ -288,9 +369,11 @@ static inline void collect_optional_exit_fields(void)
 	if (my_exit_code)
 		return;
 
-	telemetry_set_branch("HEAD");
+	if (mask_want(TELEMETRY_MASK__EXIT__BRANCH))
+		telemetry_set_branch("HEAD");
 
-	telemetry_set_repository();
+	if (mask_want(TELEMETRY_MASK__EXIT__REPO))
+		telemetry_set_repository();
 }
 
 /*
@@ -386,6 +469,9 @@ void telemetry_child_event(uint64_t ns_start, int pid, const char **argv,
 	if (my_config_telemetry < 1)
 		return;
 
+	if (!mask_want(TELEMETRY_MASK__CHILD_EVENTS))
+		return;
+
 	format_child_event("child", &jw, ns_start, pid, argv, exit_code);
 	my_emit_event(&jw);
 	jw_release(&jw);
@@ -400,6 +486,9 @@ void telemetry_hook_event(uint64_t ns_start, int pid, const char **argv,
 	struct json_writer jw = JSON_WRITER_INIT;
 
 	if (my_config_telemetry < 1)
+		return;
+
+	if (!mask_want(TELEMETRY_MASK__HOOK_EVENTS))
 		return;
 
 	format_child_event("hook", &jw, ns_start, pid, argv, exit_code);
@@ -418,10 +507,6 @@ void telemetry_alias_event(uint64_t ns_start, int pid, const char **argv,
 	if (my_config_telemetry < 1)
 		return;
 
-	format_child_event("alias", &jw, ns_start, pid, argv, exit_code);
-	my_emit_event(&jw);
-	jw_release(&jw);
-
 	/*
 	 * Also capture the alias expansion for later reporting in the exit
 	 * event for the current process.  Discard any previous alias expansion
@@ -433,6 +518,13 @@ void telemetry_alias_event(uint64_t ns_start, int pid, const char **argv,
 	jw_array_begin(&jw_alias, 0);
 	jw_array_argv(&jw_alias, argv);
 	jw_end(&jw_alias);
+
+	if (!mask_want(TELEMETRY_MASK__ALIAS_EVENTS))
+		return;
+
+	format_child_event("alias", &jw, ns_start, pid, argv, exit_code);
+	my_emit_event(&jw);
+	jw_release(&jw);
 }
 
 /*
