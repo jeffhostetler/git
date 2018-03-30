@@ -15,4 +15,11 @@ void telemetry_perf__do_read_index(uint64_t ns_start,
 				   const char * path,
 				   struct index_state *istate);
 
+/*
+ * preload-index.c:preload_index()
+ */
+void telemetry_perf__preload_index(uint64_t ns_start,
+				   int threads, int work,
+				   int cache_nr);
+
 #endif /* TELEMETRY_PERF_H */
