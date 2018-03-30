@@ -22,4 +22,10 @@ void telemetry_perf__preload_index(uint64_t ns_start,
 				   int threads, int work,
 				   int cache_nr);
 
+/*
+ * name-hash.c:lazy_init_name_hash()
+ */
+void telemetry_perf__lazy_init_name_hash(uint64_t ns_start,
+					 struct index_state *istate);
+
 #endif /* TELEMETRY_PERF_H */
