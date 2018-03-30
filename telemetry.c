@@ -242,6 +242,8 @@ static inline int config_telemetryperf(const char *var, const char *value)
 
 	if (strstr(value, "index"))
 		my_config_telemetry_perf |= TELEMETRY_PERF__INDEX;
+	if (strstr(value, "status"))
+		my_config_telemetry_perf |= TELEMETRY_PERF__STATUS;
 
 	return 0;
 }
@@ -252,6 +254,9 @@ static const char *token_name(enum telemetry_perf_token token)
 	{
 	case TELEMETRY_PERF__INDEX:
 		return "index";
+
+	case TELEMETRY_PERF__STATUS:
+		return "status";
 
 	default:
 		return "default";

@@ -21,6 +21,7 @@ enum telemetry_perf_token {
 	TELEMETRY_PERF__NONE             = 0,
 
 	TELEMETRY_PERF__INDEX            = 1<<0,
+	TELEMETRY_PERF__STATUS           = 1<<1,
 };
 
 int telemetry_perf_want(enum telemetry_perf_token token);

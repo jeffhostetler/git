@@ -28,4 +28,11 @@ void telemetry_perf__preload_index(uint64_t ns_start,
 void telemetry_perf__lazy_init_name_hash(uint64_t ns_start,
 					 struct index_state *istate);
 
+/*
+ * wt-status.c:wt_status_collect_untracked()
+ */
+struct dir_struct;
+void telemetry_perf__wt_status_collect_untracked(uint64_t ns_start,
+						 const struct dir_struct *dir);
+
 #endif /* TELEMETRY_PERF_H */

@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "dir.h"
 
 void telemetry_perf__do_read_index(uint64_t ns_start,
 				   const char * path,
@@ -76,5 +77,26 @@ void telemetry_perf__lazy_init_name_hash(uint64_t ns_start,
 
 	telemetry_perf_event(ns_start, TELEMETRY_PERF__INDEX,
 			     "lazy_init_name_hash", &jw);
+	jw_release(&jw);
+}
+
+void telemetry_perf__wt_status_collect_untracked(uint64_t ns_start,
+						 const struct dir_struct *dir)
+{
+	struct json_writer jw = JSON_WRITER_INIT;
+	
+	if (!telemetry_perf_want(TELEMETRY_PERF__STATUS))
+		return;
+
+	jw_object_begin(&jw, 0);
+	{
+		jw_object_intmax(&jw, "dir-flags", dir->flags);
+		jw_object_intmax(&jw, "dir-nr", dir->nr);
+		jw_object_intmax(&jw, "dir-ignored-nr", dir->ignored_nr);
+	}
+	jw_end(&jw);
+
+	telemetry_perf_event(ns_start, TELEMETRY_PERF__STATUS,
+			     "wt_status_collect_untracked", &jw);
 	jw_release(&jw);
 }
