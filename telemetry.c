@@ -4,6 +4,7 @@
 #include "version.h"
 #include "remote.h"
 #include "json-writer.h"
+#include "telemetry-plugin.h"
 
 /* no optional events and no options fields in fixed events */
 #define TELEMETRY_MASK__NONE                    UINTMAX_C(0)
@@ -28,8 +29,10 @@ static const char *my_config_telemetry_path; /* use stderr if null and no provid
 static int         my_config_telemetry_pretty; /* pretty print telemetry data (debug) */
 static uintmax_t   my_config_telemetry_mask = TELEMETRY_MASK__NONE;
 static enum telemetry_perf_token my_config_telemetry_perf = TELEMETRY_PERF__NONE;
+static struct telemetry_plugin *my_config_telemetry_plugin = NULL;
 
 static int      my_exit_code = -1;
+static int      my_is_final_event;
 static pid_t    my_pid;
 static uint64_t my_ns_start;
 static uint64_t my_ns_exit;
@@ -151,6 +154,12 @@ static void emit_to_path(struct json_writer *jw)
 	close(fd);
 }
 
+static void emit_to_plugin(struct json_writer *jw)
+{
+	telemetry_plugin_event(my_config_telemetry_plugin, jw->json.buf,
+			       my_is_final_event);
+}
+
 static void (*my_emit_event)(struct json_writer *jw) = emit_stderr;
 
 static inline int config_telemetry(const char *var, const char *value)
@@ -167,16 +176,17 @@ static inline int config_telemetrypretty(const char *var, const char *value)
 
 static inline int config_telemetrypath(const char *var, const char *value)
 {
-	if (is_absolute_path(value)) {
-		my_config_telemetry_path = xstrdup(value);
-		my_emit_event = emit_to_path;
-		if (my_config_telemetry == -1)
-			my_config_telemetry = 1;
-	} else {
+	if (!is_absolute_path(value)) {
 		warning("telemetry.path must be absolute path: %s",
 			value);
 		my_config_telemetry = 0;
+		return 0;
 	}
+
+	my_config_telemetry_path = xstrdup(value);
+	if (my_config_telemetry == -1)
+		my_config_telemetry = 1;
+
 	return 0;
 }
 
@@ -248,6 +258,27 @@ static inline int config_telemetryperf(const char *var, const char *value)
 	return 0;
 }
 
+/*
+ * Value should contain the plugin's pathname.
+ */
+static inline int config_telemetryplugin(const char *key, const char *value)
+{
+	my_config_telemetry_plugin = telemetry_plugin_load(value);
+	if (!my_config_telemetry_plugin) {
+		/* plugin layer already printed warning */
+		my_config_telemetry = 0;
+		return 0;
+	}
+
+	if (my_config_telemetry == -1)
+		my_config_telemetry = 1;
+	if (my_config_telemetry == 1)
+		my_config_telemetry = telemetry_plugin_initialize(
+			my_config_telemetry_plugin);
+
+	return 0;
+}
+
 static const char *token_name(enum telemetry_perf_token token)
 {
 	switch (token)
@@ -275,6 +306,8 @@ static int config_cb(const char *key, const char *value, void *d)
 		return config_telemetrymask(key, value);
 	if (!strcmp(key, "telemetry.perf"))
 		return config_telemetryperf(key, value);
+	if (!strcmp(key, "telemetry.plugin"))
+		return config_telemetryplugin(key, value);
 
 	return 0;
 }
@@ -282,6 +315,11 @@ static int config_cb(const char *key, const char *value, void *d)
 static inline void read_early_telemetry_config(void)
 {
 	read_early_config(config_cb, NULL);
+
+	if (my_config_telemetry_plugin)
+		my_emit_event = emit_to_plugin;
+	else if (my_config_telemetry_path)
+		my_emit_event = emit_to_path;
 }
 
 static inline void format_exit_event(struct json_writer *jw)
@@ -329,6 +367,7 @@ static void my_atexit(void)
 {
 	if (my_config_telemetry == 1) {
 		format_exit_event(&jw_exit);
+		my_is_final_event = 1;
 		my_emit_event(&jw_exit);
 	}
 

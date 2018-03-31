@@ -126,6 +126,8 @@ all::
 #
 # Define NEEDS_LIBGEN if your libgen needs -lgen when linking
 #
+# Define NEEDS_LIBDL if you need -ldl to get dlopen().
+#
 # Define NO_SYS_SELECT_H if you don't have sys/select.h.
 #
 # Define NO_SYMLINK_HEAD if you never want .git/HEAD to be a symbolic link.
@@ -903,6 +905,7 @@ LIB_OBJS += symlinks.o
 LIB_OBJS += tag.o
 LIB_OBJS += telemetry.o
 LIB_OBJS += telemetry-perf.o
+LIB_OBJS += telemetry-plugin.o
 LIB_OBJS += tempfile.o
 LIB_OBJS += tmp-objdir.o
 LIB_OBJS += trace.o
@@ -1306,6 +1309,9 @@ ifdef NEEDS_LIBICONV
 endif
 ifdef NEEDS_LIBGEN
 	EXTLIBS += -lgen
+endif
+ifdef NEEDS_LIBDL
+	EXTLIBS += -ldl
 endif
 ifndef NO_GETTEXT
 ifndef LIBC_CONTAINS_LIBINTL
