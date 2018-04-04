@@ -73,14 +73,18 @@ static void *preload_thread(void *_data)
 	return NULL;
 }
 
+
 static void preload_index(struct index_state *index,
 			  const struct pathspec *pathspec)
 {
 	int threads, i, work, offset;
+	uint64_t ns_start;
 	struct thread_data data[MAX_PARALLEL];
 
 	if (!core_preload_index)
 		return;
+
+	ns_start = getnanotime();
 
 	threads = index->cache_nr / THREAD_COST;
 	if ((index->cache_nr > 1) && (threads < 2) && getenv("GIT_FORCE_PRELOAD_TEST"))
@@ -108,6 +112,9 @@ static void preload_index(struct index_state *index,
 		if (pthread_join(p->pthread, NULL))
 			die("unable to join threaded lstat");
 	}
+
+	telemetry_perf__preload_index(ns_start, threads, work,
+				      index->cache_nr);
 }
 #endif
 

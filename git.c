@@ -242,6 +242,7 @@ static int handle_alias(int *argcp, const char ***argv)
 			child.use_shell = 1;
 			argv_array_push(&child.args, alias_string + 1);
 			argv_array_pushv(&child.args, (*argv) + 1);
+			child.is_alias_expansion = 1;
 
 			ret = run_command(&child);
 			if (ret >= 0)   /* normal exit */
@@ -572,6 +573,7 @@ static void execv_dashed_external(const char **argv)
 	cmd.clean_on_exit = 1;
 	cmd.wait_after_clean = 1;
 	cmd.silent_exec_failure = 1;
+	cmd.is_alias_expansion = 1;
 
 	trace_argv_printf(cmd.args.argv, "trace: exec:");
 
@@ -636,6 +638,7 @@ int cmd_main(int argc, const char **argv)
 			cmd = slash + 1;
 	}
 
+	telemetry_start_event(argc, argv);
 	trace_command_performance(argv);
 
 	/*
@@ -699,5 +702,5 @@ int cmd_main(int argc, const char **argv)
 	fprintf(stderr, "Failed to run command '%s': %s\n",
 		cmd, strerror(errno));
 
-	return 1;
+	return telemetry_exit_event(1);
 }

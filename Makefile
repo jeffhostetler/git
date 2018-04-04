@@ -126,6 +126,8 @@ all::
 #
 # Define NEEDS_LIBGEN if your libgen needs -lgen when linking
 #
+# Define NEEDS_LIBDL if you need -ldl to get dlopen().
+#
 # Define NO_SYS_SELECT_H if you don't have sys/select.h.
 #
 # Define NO_SYMLINK_HEAD if you never want .git/HEAD to be a symbolic link.
@@ -662,6 +664,7 @@ TEST_PROGRAMS_NEED_X += test-fake-ssh
 TEST_PROGRAMS_NEED_X += test-genrandom
 TEST_PROGRAMS_NEED_X += test-hashmap
 TEST_PROGRAMS_NEED_X += test-index-version
+TEST_PROGRAMS_NEED_X += test-json-writer
 TEST_PROGRAMS_NEED_X += test-lazy-init-name-hash
 TEST_PROGRAMS_NEED_X += test-line-buffer
 TEST_PROGRAMS_NEED_X += test-match-trees
@@ -815,6 +818,7 @@ LIB_OBJS += hashmap.o
 LIB_OBJS += help.o
 LIB_OBJS += hex.o
 LIB_OBJS += ident.o
+LIB_OBJS += json-writer.o
 LIB_OBJS += kwset.o
 LIB_OBJS += levenshtein.o
 LIB_OBJS += line-log.o
@@ -899,6 +903,9 @@ LIB_OBJS += submodule-config.o
 LIB_OBJS += sub-process.o
 LIB_OBJS += symlinks.o
 LIB_OBJS += tag.o
+LIB_OBJS += telemetry.o
+LIB_OBJS += telemetry-perf.o
+LIB_OBJS += telemetry-plugin.o
 LIB_OBJS += tempfile.o
 LIB_OBJS += tmp-objdir.o
 LIB_OBJS += trace.o
@@ -1302,6 +1309,9 @@ ifdef NEEDS_LIBICONV
 endif
 ifdef NEEDS_LIBGEN
 	EXTLIBS += -lgen
+endif
+ifdef NEEDS_LIBDL
+	EXTLIBS += -ldl
 endif
 ifndef NO_GETTEXT
 ifndef LIBC_CONTAINS_LIBINTL

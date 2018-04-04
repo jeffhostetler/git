@@ -627,6 +627,8 @@ fail_pipe:
 	trace_argv_printf(cmd->argv, "trace: run_command:");
 	fflush(NULL);
 
+	cmd->ns_start = getnanotime();
+
 #ifndef GIT_WINDOWS_NATIVE
 {
 	int notify_pipe[2];
@@ -863,16 +865,31 @@ fail_pipe:
 	return 0;
 }
 
+static inline void do_telemetry(struct child_process *cmd, int ret)
+{
+	if (cmd->is_alias_expansion)
+		telemetry_alias_event(cmd->ns_start, cmd->pid, cmd->argv, ret);
+
+	else if (cmd->is_hook)
+		telemetry_hook_event(cmd->ns_start, cmd->pid, cmd->argv, ret);
+
+	else
+		telemetry_child_event(cmd->ns_start, cmd->pid, cmd->argv, ret);
+}
+
 int finish_command(struct child_process *cmd)
 {
 	int ret = wait_or_whine(cmd->pid, cmd->argv[0], 0);
+	do_telemetry(cmd, ret);
 	child_process_clear(cmd);
 	return ret;
 }
 
 int finish_command_in_signal(struct child_process *cmd)
 {
-	return wait_or_whine(cmd->pid, cmd->argv[0], 1);
+	int ret = wait_or_whine(cmd->pid, cmd->argv[0], 1);
+	do_telemetry(cmd, ret);
+	return ret;
 }
 
 

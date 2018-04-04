@@ -1214,4 +1214,13 @@ extern void unleak_memory(const void *ptr, size_t len);
 #define UNLEAK(var) do {} while (0)
 #endif
 
+/*
+ * Intercept exit() so that we can catch the exit-code and generate
+ * telememtry data.
+ */
+#ifndef exit
+int telemetry_exit_event(int exit_code);
+#define exit(code) exit(telemetry_exit_event(code))
+#endif
+
 #endif

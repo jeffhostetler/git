@@ -578,8 +578,13 @@ static void threaded_lazy_init_name_hash(
 
 static void lazy_init_name_hash(struct index_state *istate)
 {
+	uint64_t ns_start;
+
 	if (istate->name_hash_initialized)
 		return;
+
+	ns_start = getnanotime();
+
 	hashmap_init(&istate->name_hash, cache_entry_cmp, NULL, istate->cache_nr);
 	hashmap_init(&istate->dir_hash, dir_entry_cmp, NULL, istate->cache_nr);
 
@@ -600,6 +605,8 @@ static void lazy_init_name_hash(struct index_state *istate)
 	}
 
 	istate->name_hash_initialized = 1;
+
+	telemetry_perf__lazy_init_name_hash(ns_start, istate);
 }
 
 /*

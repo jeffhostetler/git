@@ -693,6 +693,8 @@ static void wt_status_collect_untracked(struct wt_status *s)
 
 	if (advice_status_u_option)
 		s->untracked_in_ms = (getnanotime() - t_begin) / 1000000;
+
+	telemetry_perf__wt_status_collect_untracked(t_begin, &dir);
 }
 
 void wt_status_collect(struct wt_status *s)

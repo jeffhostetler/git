@@ -1,0 +1,7 @@
+This directory contains some example telemetry plugins.
+These are built as shared libraries and installed in a
+known location.
+
+Users can set "telemetry.plugin" to the absolute path
+of the .so or .dll and have telemetry events routed to
+the plugin.
