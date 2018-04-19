@@ -1,3 +1,7 @@
+merge.aggressive::
+	Passes "aggressive" to read-tree which makes the command resolve
+	a few more cases internally. See "--aggressive" in linkgit:git-read-tree[1].
+
 merge.conflictStyle::
 	Specify the style in which conflicted hunks are written out to
 	working tree files upon merge.  The default is "merge", which
