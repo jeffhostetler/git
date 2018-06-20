@@ -1326,6 +1326,7 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 	if (len) {
 		const char *prefix = o->prefix ? o->prefix : "";
 		struct traverse_info info;
+		uint64_t start;
 
 		setup_traverse_info(&info, prefix);
 		info.fn = unpack_callback;
@@ -1350,8 +1351,10 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 			}
 		}
 
+		start = getnanotime();
 		if (traverse_trees(len, t, &info) < 0)
 			goto return_failed;
+		trace_performance_since(start, "traverse_trees");
 	}
 
 	/* Any left-over entries in the index? */
