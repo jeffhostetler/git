@@ -815,6 +815,7 @@ extern int fsync_object_files;
 extern int core_preload_index;
 extern int core_commit_graph;
 extern int core_apply_sparse_checkout;
+extern int core_parallel_unpack_trees;
 extern int precomposed_unicode;
 extern int protect_hfs;
 extern int protect_ntfs;

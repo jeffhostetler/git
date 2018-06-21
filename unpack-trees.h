@@ -3,6 +3,11 @@
 
 #include "tree-walk.h"
 #include "argv-array.h"
+#ifndef NO_PTHREADS
+#include "git-compat-util.h"
+#include <pthread.h>
+#include "mpmcqueue.h"
+#endif
 
 #define MAX_UNPACK_TREES 8
 
@@ -80,6 +85,31 @@ struct unpack_trees_options {
 	struct index_state result;
 
 	struct exclude_list *el; /* for internal use */
+#ifndef NO_PTHREADS
+	/*
+	 * Speed up the tree traversal by adding all discovered tree objects
+	 * into a queue and have a pool of worker threads process them in
+	 * parallel.  Since there is no upper bound on the size of a tree and
+	 * each worker thread will be adding discovered tree objects to the
+	 * queue, we need an unbounded multi-producer-multi-consumer queue.
+	 */
+	struct mpmcq queue;
+
+	int nr_threads;
+	pthread_t *pthreads;
+
+	/* need a mutex as we don't have fetch_and_add() */
+	int remaining_work;
+	pthread_mutex_t work_mutex;
+
+	/* The ODB is not thread safe so we must serialize access to it */
+	pthread_mutex_t odb_mutex;
+
+	/* various functions that are not thread safe and must be serialized for now */
+	pthread_mutex_t unpack_index_entry_mutex;
+	pthread_mutex_t unpack_nondirectories_mutex;
+
+#endif
 };
 
 extern int unpack_trees(unsigned n, struct tree_desc *t,
