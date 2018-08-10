@@ -17,6 +17,7 @@ static struct test_cmd cmds[] = {
 	{ "dump-cache-tree", cmd__dump_cache_tree },
 	{ "dump-split-index", cmd__dump_split_index },
 	{ "example-decorate", cmd__example_decorate },
+	{ "file-append", cmd__file_append },
 	{ "genrandom", cmd__genrandom },
 	{ "hashmap", cmd__hashmap },
 	{ "iconv", cmd__iconv },
