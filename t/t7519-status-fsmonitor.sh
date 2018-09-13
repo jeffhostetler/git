@@ -8,7 +8,7 @@ test_description='git status with file system watcher'
 # To run the entire git test suite using fsmonitor:
 #
 # copy t/t7519/fsmonitor-all to a location in your path and then set
-# GIT_FSMONITOR_TEST=fsmonitor-all and run your tests.
+# GIT_TEST_FSMONITOR=fsmonitor-all and run your tests.
 #
 
 # Note, after "git reset --hard HEAD" no extensions exist other than 'TREE'
