@@ -3480,7 +3480,7 @@ static struct index_entry_offset_table *read_ieot_extension(const char *mmap, si
        /* validate the version is IEOT_VERSION */
        ext_version = get_be32(index);
        if (ext_version != IEOT_VERSION) {
-	       error("invalid IEOT version %d", ext_version);
+	       error(_("invalid IEOT version %d"), ext_version);
 	       return NULL;
        }
        index += sizeof(uint32_t);
@@ -3488,7 +3488,7 @@ static struct index_entry_offset_table *read_ieot_extension(const char *mmap, si
        /* extension size - version bytes / bytes per entry */
        nr = (extsize - sizeof(uint32_t)) / (sizeof(uint32_t) + sizeof(uint32_t));
        if (!nr) {
-	       error("invalid number of IEOT entries %d", nr);
+	       error(_("invalid IEOT extension size %d"), extsize);
 	       return NULL;
        }
        ieot = xmalloc(sizeof(struct index_entry_offset_table)
