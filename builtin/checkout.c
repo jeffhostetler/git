@@ -632,7 +632,9 @@ static int merge_working_tree(const struct checkout_opts *opts,
 		tree = parse_tree_indirect(&new_branch_info->commit->object.oid);
 		init_tree_desc(&trees[1], tree->buffer, tree->size);
 
+		trace2_region_enter("checkout", "unpack_trees", the_repository);
 		ret = unpack_trees(2, trees, &topts);
+		trace2_region_leave("checkout", "unpack_trees", the_repository);
 		clear_unpack_trees_porcelain(&topts);
 		if (ret == -1) {
 			/*
@@ -961,7 +963,9 @@ static int switch_branches(const struct checkout_opts *opts,
 			show_local_changes(&new_branch_info->commit->object, &opts->diff_options);
 		}
 	} else {
+		trace2_region_enter("checkout", "merge_working_tree", the_repository);
 		ret = merge_working_tree(opts, &old_branch_info, new_branch_info, &writeout_error);
+		trace2_region_leave("checkout", "merge_working_tree", the_repository);
 		if (ret) {
 			free(path_to_free);
 			return ret;

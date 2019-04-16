@@ -20,6 +20,7 @@
 #include "fetch-object.h"
 #include "gvfs.h"
 #include "virtualfilesystem.h"
+#include "trace2.h"
 
 /*
  * Error messages expected by scripts out of plumbing commands such as
@@ -1299,9 +1300,15 @@ static int clear_ce_flags_dir(struct index_state *istate,
 {
 	struct cache_entry **cache_end;
 	int dtype = DT_DIR;
-	int ret = is_excluded_from_list(prefix->buf, prefix->len,
-					basename, &dtype, el, istate);
+	int ret;
 	int rc;
+
+	trace2_region_enter_printf("unpack-trees", "clear_ce_flags_dir", the_repository,
+				   "input-nr[%d] prefix[%s] base[%s]",
+				   nr, prefix->buf, basename);
+
+	ret = is_excluded_from_list(prefix->buf, prefix->len,
+					basename, &dtype, el, istate);
 
 	strbuf_addch(prefix, '/');
 
@@ -1327,6 +1334,11 @@ static int clear_ce_flags_dir(struct index_state *istate,
 			      select_mask, clear_mask,
 			      el, ret);
 	strbuf_setlen(prefix, prefix->len - 1);
+
+	trace2_region_leave_printf("unpack-trees", "clear_ce_flags_dir", the_repository,
+				   "input-nr[%d] prefix[%s] base[%s] rc[%d]",
+				   nr, prefix->buf, basename, rc);
+
 	return rc;
 }
 
@@ -1353,6 +1365,9 @@ static int clear_ce_flags_1(struct index_state *istate,
 {
 	struct cache_entry **cache_end = cache + nr;
 
+	trace2_region_enter_printf("unpack-trees", "clear_ce_flags_1", the_repository,
+				   "input-nr[%d] prefix[%s] ce[]: '%s' .. '%s'",
+				   nr, prefix->buf, cache[0]->name, cache[nr - 1]->name);
 	/*
 	 * Process all entries that have the given prefix and meet
 	 * select_mask condition
@@ -1419,6 +1434,8 @@ static int clear_ce_flags_1(struct index_state *istate,
 			ce->ce_flags &= ~clear_mask;
 		cache++;
 	}
+	trace2_region_leave_printf("unpack-trees", "clear_ce_flags_1", the_repository,
+				   "output-nr[%d]", (nr - (cache_end - cache)));
 	return nr - (cache_end - cache);
 }
 
@@ -1467,7 +1484,10 @@ static void mark_new_skip_worktree(struct exclude_list *el,
 	 * 2. Widen worktree according to sparse-checkout file.
 	 * Matched entries will have skip_wt_flag cleared (i.e. "in")
 	 */
+	trace2_region_enter("unpack-trees", "clear_ce_flags", the_repository);
 	clear_ce_flags(istate, select_flag, skip_wt_flag, el);
+	trace2_region_leave("unpack-trees", "clear_ce_flags", the_repository);
+
 }
 
 static int verify_absent(const struct cache_entry *,
