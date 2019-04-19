@@ -957,6 +957,7 @@ static int switch_branches(const struct checkout_opts *opts,
 
 	/* optimize the "checkout -b <new_branch> path */
 	if (skip_merge_working_tree(opts, &old_branch_info, new_branch_info)) {
+		trace2_cmd_mode("dash_b_optimization");
 		if (!checkout_optimize_new_branch && !opts->quiet) {
 			if (read_cache_preload(NULL) < 0)
 				return error(_("index file corrupt"));
@@ -1184,6 +1185,8 @@ static int switch_unborn_to_new_branch(const struct checkout_opts *opts)
 static int checkout_branch(struct checkout_opts *opts,
 			   struct branch_info *new_branch_info)
 {
+	int result;
+
 	if (opts->pathspec.nr)
 		die(_("paths cannot be used with switching branches"));
 
@@ -1233,7 +1236,10 @@ static int checkout_branch(struct checkout_opts *opts,
 		    (flag & REF_ISSYMREF) && is_null_oid(&rev))
 			return switch_unborn_to_new_branch(opts);
 	}
-	return switch_branches(opts, new_branch_info);
+	trace2_region_enter("checkout", "switch_branches", the_repository);
+	result = switch_branches(opts, new_branch_info);
+	trace2_region_leave("checkout", "switch_branches", the_repository);
+	return result;
 }
 
 int cmd_checkout(int argc, const char **argv, const char *prefix)
