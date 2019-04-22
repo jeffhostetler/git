@@ -1303,7 +1303,7 @@ static int clear_ce_flags_dir(struct index_state *istate,
 	int ret;
 	int rc;
 
-	trace2_region_enter_printf("unpack-trees", "clear_ce_flags_dir", the_repository,
+	trace2_region_enter_printf("unpack", "clear_ce_flags_dir", the_repository,
 				   "input-nr[%d] prefix[%s] base[%s]",
 				   nr, prefix->buf, basename);
 
@@ -1335,7 +1335,7 @@ static int clear_ce_flags_dir(struct index_state *istate,
 			      el, ret);
 	strbuf_setlen(prefix, prefix->len - 1);
 
-	trace2_region_leave_printf("unpack-trees", "clear_ce_flags_dir", the_repository,
+	trace2_region_leave_printf("unpack", "clear_ce_flags_dir", the_repository,
 				   "input-nr[%d] prefix[%s] base[%s] rc[%d]",
 				   nr, prefix->buf, basename, rc);
 
@@ -1365,7 +1365,7 @@ static int clear_ce_flags_1(struct index_state *istate,
 {
 	struct cache_entry **cache_end = cache + nr;
 
-	trace2_region_enter_printf("unpack-trees", "clear_ce_flags_1", the_repository,
+	trace2_region_enter_printf("unpack", "clear_ce_flags_1", the_repository,
 				   "input-nr[%d] prefix[%s] ce[]: '%s' .. '%s'",
 				   nr, prefix->buf, cache[0]->name, cache[nr - 1]->name);
 	/*
@@ -1434,7 +1434,7 @@ static int clear_ce_flags_1(struct index_state *istate,
 			ce->ce_flags &= ~clear_mask;
 		cache++;
 	}
-	trace2_region_leave_printf("unpack-trees", "clear_ce_flags_1", the_repository,
+	trace2_region_leave_printf("unpack", "clear_ce_flags_1", the_repository,
 				   "output-nr[%d]", (nr - (cache_end - cache)));
 	return nr - (cache_end - cache);
 }
@@ -1464,6 +1464,9 @@ static void mark_new_skip_worktree(struct exclude_list *el,
 {
 	int i;
 
+	trace2_region_enter_printf("unpack", "mark_new_skip_worktree", the_repository,
+				   "select_flag=0x%08lx skip_wt_flag=0x%08lx",
+				   select_flag, skip_wt_flag);
 	/*
 	 * 1. Pretend the narrowest worktree: only unmerged entries
 	 * are checked out
@@ -1484,10 +1487,13 @@ static void mark_new_skip_worktree(struct exclude_list *el,
 	 * 2. Widen worktree according to sparse-checkout file.
 	 * Matched entries will have skip_wt_flag cleared (i.e. "in")
 	 */
-	trace2_region_enter("unpack-trees", "clear_ce_flags", the_repository);
+	trace2_region_enter("unpack", "clear_ce_flags", the_repository);
 	clear_ce_flags(istate, select_flag, skip_wt_flag, el);
-	trace2_region_leave("unpack-trees", "clear_ce_flags", the_repository);
+	trace2_region_leave("unpack", "clear_ce_flags", the_repository);
 
+	trace2_region_leave_printf("unpack", "mark_new_skip_worktree", the_repository,
+				   "select_flag=0x%08lx skip_wt_flag=0x%08lx",
+				   select_flag, skip_wt_flag);
 }
 
 static int verify_absent(const struct cache_entry *,
@@ -1586,7 +1592,9 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 		}
 
 		trace_performance_enter();
+		trace2_region_enter("unpack", "traverse_trees", the_repository);
 		ret = traverse_trees(len, t, &info);
+		trace2_region_leave("unpack", "traverse_trees", the_repository);
 		trace_performance_leave("traverse_trees");
 		if (ret < 0)
 			goto return_failed;

@@ -101,6 +101,9 @@ static void initialize_includes_hashmap(struct hashmap *map, struct strbuf *vfs_
 	size_t len;
 	int i;
 
+	trace2_region_enter("vfs", "initialize_includes_hashmap",
+			    the_repository);
+	
 	/*
 	 * Build a hashmap of the virtual file system data we can use to look
 	 * for cache entry matches quickly
@@ -117,6 +120,9 @@ static void initialize_includes_hashmap(struct hashmap *map, struct strbuf *vfs_
 			entry = buf + i + 1;
 		}
 	}
+
+	trace2_region_leave("vfs", "initialize_includes_hashmap",
+			    the_repository);
 }
 
 /*
@@ -168,6 +174,9 @@ static void initialize_parent_directory_hashmap(struct hashmap *map, struct strb
 	size_t len;
 	int i;
 
+	trace2_region_enter("vfs", "initialize_parent_directory_hashmap",
+			    the_repository);
+
 	/*
 	 * Build a hashmap of the parent directories contained in the virtual
 	 * file system data we can use to look for matches quickly
@@ -184,6 +193,9 @@ static void initialize_parent_directory_hashmap(struct hashmap *map, struct strb
 			entry = buf + i + 1;
 		}
 	}
+
+	trace2_region_leave("vfs", "initialize_parent_directory_hashmap",
+			    the_repository);
 }
 
 static int check_directory_hashmap(struct hashmap *map, const char *pathname, int pathlen)
@@ -251,6 +263,7 @@ void apply_virtualfilesystem(struct index_state *istate)
 	char *buf, *entry;
 	int i;
 	int nr_tracked = 0;
+	int nr_rows = 0;
 
 	if (!git_config_get_virtualfilesystem())
 		return;
@@ -267,6 +280,8 @@ void apply_virtualfilesystem(struct index_state *istate)
 	for (i = 0; i < virtual_filesystem_data.len; i++) {
 		if (buf[i] == '\0') {
 			int pos, len;
+
+			nr_rows++;
 
 			len = buf + i - entry;
 
@@ -303,6 +318,8 @@ void apply_virtualfilesystem(struct index_state *istate)
 
 	if (nr_tracked > 0)
 		trace2_data_intmax("vfs", the_repository, "apply/tracked", nr_tracked);
+	if (nr_rows > 0)
+		trace2_data_intmax("vfs", the_repository, "apply/rows", nr_rows);
 }
 
 /*
