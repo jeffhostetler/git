@@ -4,6 +4,7 @@
 #include "sub-process.h"
 #include "sigchain.h"
 #include "pkt-line.h"
+#include "quote.h"
 
 int cmd2process_cmp(const void *unused_cmp_data,
 		    const struct hashmap_entry *eptr,
@@ -115,6 +116,53 @@ int subprocess_start(struct hashmap *hashmap, struct subprocess_entry *entry, co
 	err = startfn(entry);
 	if (err) {
 		error("initialization for subprocess '%s' failed", cmd);
+		subprocess_stop(hashmap, entry);
+		return err;
+	}
+
+	hashmap_add(hashmap, &entry->ent);
+	return 0;
+}
+
+int subprocess_start_argv(struct hashmap *hashmap,
+			  struct subprocess_entry *entry,
+			  int use_shell,
+			  int is_git_cmd,
+			  const struct argv_array *argv,
+			  subprocess_start_fn startfn)
+{
+	int err;
+	int k;
+	struct child_process *process;
+	struct strbuf quoted = STRBUF_INIT;
+
+	process = &entry->process;
+
+	child_process_init(process);
+	for (k = 0; k < argv->argc; k++)
+		argv_array_push(&process->args, argv->argv[k]);
+	process->use_shell = use_shell;
+	process->in = -1;
+	process->out = -1;
+	process->git_cmd = is_git_cmd;
+	process->clean_on_exit = 1;
+	process->clean_on_exit_handler = subprocess_exit_handler;
+	process->trace2_child_class = "subprocess";
+
+	sq_quote_argv_pretty(&quoted, argv->argv);
+	entry->cmd = strbuf_detach(&quoted, 0);
+
+	err = start_command(process);
+	if (err) {
+		error("cannot fork to run subprocess '%s'", entry->cmd);
+		return err;
+	}
+
+	hashmap_entry_init(&entry->ent, strhash(entry->cmd));
+
+	err = startfn(entry);
+	if (err) {
+		error("initialization for subprocess '%s' failed", entry->cmd);
 		subprocess_stop(hashmap, entry);
 		return err;
 	}
