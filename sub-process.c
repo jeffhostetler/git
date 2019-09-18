@@ -63,6 +63,9 @@ void subprocess_stop(struct hashmap *hashmap, struct subprocess_entry *entry)
 	finish_command(&entry->process);
 
 	hashmap_remove(hashmap, &entry->ent, NULL);
+
+	free((char *)entry->cmd);
+	entry->cmd = NULL;
 }
 
 static void subprocess_exit_handler(struct child_process *process)
@@ -82,7 +85,17 @@ int subprocess_start(struct hashmap *hashmap, struct subprocess_entry *entry, co
 	int err;
 	struct child_process *process;
 
-	entry->cmd = cmd;
+	/*
+	 * Do not use the provided value of `cmd` as the key in our hash.
+	 *
+	 * Most callers of `subprocess_start()` pass a value in `cmd`
+	 * that they received from `find_hook()` which returns a
+	 * static buffer and is therefore only good until the next
+	 * call to `find_hook()`, so we do not want to borrow this
+	 * pointer in our `entry`.
+	 */
+	entry->cmd = xstrdup(cmd);
+
 	process = &entry->process;
 
 	child_process_init(process);
