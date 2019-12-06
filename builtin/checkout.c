@@ -704,7 +704,9 @@ static int merge_working_tree(const struct checkout_opts *opts,
 		tree = new_tree;
 		init_tree_desc(&trees[1], tree->buffer, tree->size);
 
+		trace2_region_enter("unpack_trees", "merge_working_tree", NULL);
 		ret = unpack_trees(2, trees, &topts);
+		trace2_region_leave("unpack_trees", "merge_working_tree", NULL);
 		clear_unpack_trees_porcelain(&topts);
 		if (ret == -1) {
 			/*

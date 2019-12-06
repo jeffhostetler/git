@@ -496,6 +496,7 @@ static int diff_cache(struct rev_info *revs,
 	struct tree *tree;
 	struct tree_desc t;
 	struct unpack_trees_options opts;
+	int result;
 
 	tree = parse_tree_indirect(tree_oid);
 	if (!tree)
@@ -515,7 +516,10 @@ static int diff_cache(struct rev_info *revs,
 	opts.pathspec->recursive = 1;
 
 	init_tree_desc(&t, tree->buffer, tree->size);
-	return unpack_trees(1, &t, &opts);
+	trace2_region_enter("unpack_trees", "diff_cache", NULL);
+	result = unpack_trees(1, &t, &opts);
+	trace2_region_leave("unpack_trees", "diff_cache", NULL);
+	return result;
 }
 
 int run_diff_index(struct rev_info *revs, int cached)

@@ -1541,6 +1541,8 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 		die("unpack_trees takes at most %d trees", MAX_UNPACK_TREES);
 
 	trace2_region_enter("unpack_trees", "unpack_trees", NULL);
+	trace2_data_intmax("unpack_trees", NULL, "nr_trees", len);
+
 	nr_unpack_entry_at_start = get_nr_unpack_entry();
 
 	trace_performance_enter();
