@@ -4,6 +4,9 @@ test_description='blob conversion via gitattributes'
 
 . ./test-lib.sh
 
+export GIT_TRACE2_PERF=/Users/jeffhost/work/t0021.log
+export GIT_TRACE2_PERF_BRIEF=1
+
 TEST_ROOT="$(pwd)"
 PATH=$PWD$PATH_SEP$PATH
 

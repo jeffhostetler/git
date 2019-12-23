@@ -127,6 +127,8 @@ static int streaming_write_entry(const struct cache_entry *ce, char *path,
 	int result = 0;
 	int fd;
 
+	trace2_printf("write_entry: streaming: '%s'", path); // filter may be a chain/cascade
+
 	fd = open_output_fd(path, ce, to_tempfile);
 	if (fd < 0)
 		return -1;
@@ -296,6 +298,8 @@ static int write_entry(struct cache_entry *ce,
 		break;
 
 	case S_IFREG:
+		trace2_printf("write_entry: not-streaming '%s'", path);
+
 		/*
 		 * We do not send the blob in case of a retry, so do not
 		 * bother reading it at all.
@@ -314,6 +318,7 @@ static int write_entry(struct cache_entry *ce,
 		 * Convert from git internal format to working tree format
 		 */
 		if (dco && dco->state != CE_NO_DELAY) {
+			trace2_printf("write_entry: async-convert '%s'", path);
 			ret = async_convert_to_working_tree(state->istate, ce->name, new_blob,
 							    size, &buf, dco);
 			if (ret && string_list_has_string(&dco->paths, ce->name)) {
@@ -321,6 +326,7 @@ static int write_entry(struct cache_entry *ce,
 				goto delayed;
 			}
 		} else
+			trace2_printf("write_entry: convert '%s'", path);
 			ret = convert_to_working_tree(state->istate, ce->name, new_blob, size, &buf);
 
 		if (ret) {

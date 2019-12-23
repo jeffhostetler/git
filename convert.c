@@ -1355,6 +1355,12 @@ static void convert_attrs(const struct index_state *istate,
 		ca->crlf_action = CRLF_AUTO_CRLF;
 	if (ca->crlf_action == CRLF_UNDEFINED && auto_crlf == AUTO_CRLF_INPUT)
 		ca->crlf_action = CRLF_AUTO_INPUT;
+
+	trace2_printf("convert_attrs: [attr %x][crlf %x][id %d][enc %s][drv %s] '%s'",
+		      ca->attr_action, ca->crlf_action, ca->ident,
+		      (ca->working_tree_encoding ? ca->working_tree_encoding : "(nul)"),
+		      (ca->drv && ca->drv->name ? ca->drv->name : "(nul)"), // note these can chain
+		      path);
 }
 
 void reset_parsed_attributes(void)
