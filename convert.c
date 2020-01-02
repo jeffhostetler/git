@@ -10,6 +10,7 @@
 #include "utf8.h"
 #include "ll-merge.h"
 #include "gvfs.h"
+#include "json-writer.h"
 
 /*
  * convert.c - convert a file when checking it out and checking it in.
@@ -2015,4 +2016,60 @@ int stream_filter(struct stream_filter *filter,
 		  char *output, size_t *osize_p)
 {
 	return filter->vtbl->filter(filter, input, isize_p, output, osize_p);
+}
+
+static void serialize_struct_convert_driver(struct json_writer *jw,
+					    const char *key,
+					    const struct convert_driver *drv)
+{
+	jw_object_inline_begin_object(jw, key);
+
+	jw_object_string(jw, "name", drv->name);
+
+	if (drv->smudge && *drv->smudge)
+		jw_object_string(jw, "smudge", drv->smudge);
+
+	if (drv->clean && *drv->clean)
+		jw_object_string(jw, "clean", drv->clean);
+
+	if (drv->process && *drv->process)
+		jw_object_string(jw, "process", drv->process);
+
+	jw_end(jw);
+}
+
+static void serialize_struct_conv_attrs(struct json_writer *jw,
+					const char *key,
+					const struct conv_attrs *ca)
+{
+	jw_object_inline_begin_object(jw, key);
+
+	if (ca->attr_action)
+		jw_object_intmax(jw, "attr_action", ca->attr_action);
+
+	if (ca->crlf_action)
+		jw_object_intmax(jw, "crlf_action", ca->crlf_action);
+
+	if (ca->ident)
+		jw_object_intmax(jw, "ident", ca->ident);
+
+	if (ca->working_tree_encoding && *ca->working_tree_encoding)
+		jw_object_string(jw, "working_tree_encoding",
+				 ca->working_tree_encoding);
+
+	if (ca->drv)
+		serialize_struct_convert_driver(jw, "drv", ca->drv);
+
+	jw_end(jw);
+}
+
+void serialize_active_attributes_for_path(struct json_writer *jw,
+					  const struct index_state *istate,
+					  const char *path)
+{
+	struct conv_attrs ca;
+
+	convert_attrs(istate, &ca, path);
+
+	serialize_struct_conv_attrs(jw, "conv_attrs", &ca);
 }

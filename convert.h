@@ -130,4 +130,16 @@ int stream_filter(struct stream_filter *,
 		  const char *input, size_t *isize_p,
 		  char *output, size_t *osize_p);
 
+struct json_writer;
+
+/*
+ * Serialize the set of conversion attributes computed for a file
+ * and relative to the current in-memory index and any in-progress
+ * (merge) computations and/or any cached/non-cached per-directory
+ * .gitattributes specifications.
+ */
+void serialize_active_attributes_for_path(struct json_writer *jw,
+					  const struct index_state *istate,
+					  const char *path);
+
 #endif /* CONVERT_H */

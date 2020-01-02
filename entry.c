@@ -6,6 +6,7 @@
 #include "submodule.h"
 #include "progress.h"
 #include "fsmonitor.h"
+#include "json-writer.h"
 
 static void create_directories(const char *path, int path_len,
 			       const struct checkout *state)
@@ -267,6 +268,22 @@ static int write_entry(struct cache_entry *ce,
 	struct stat st;
 	const struct submodule *sub;
 
+	struct json_writer jw = JSON_WRITER_INIT;
+
+	jw_object_begin(&jw, 0);
+
+	// TODO If 'path' and 'name' always equal we can omit one of them.
+	jw_object_string(&jw, "path", path);
+	jw_object_string(&jw, "name", ce->name);
+	jw_object_string(&jw, "oid", oid_to_hex(&ce->oid));
+	jw_object_intmax(&jw, "flags", ce->ce_flags);
+	jw_object_intmax(&jw, "mode", ce->ce_mode);
+	serialize_active_attributes_for_path(&jw, state->istate, ce->name);
+
+	jw_end(&jw);
+	trace2_printf("write_entry: '%s'", jw.json.buf);
+	jw_release(&jw);
+
 	if (ce_mode_s_ifmt == S_IFREG) {
 		struct stream_filter *filter = get_stream_filter(state->istate, ce->name,
 								 &ce->oid);
@@ -387,6 +404,12 @@ finish:
 		mark_fsmonitor_invalid(state->istate, ce);
 		state->istate->cache_changed |= CE_ENTRY_CHANGED;
 	}
+
+	trace2_printf("write_entry: finish [ce_flags %08x][ce_mode %x][size %d][mtime %08x][ctime %08x] '%s'",
+		      ce->ce_flags, ce->ce_mode,
+		      ce->ce_stat_data.sd_size,
+		      ce->ce_stat_data.sd_mtime.sec, ce->ce_stat_data.sd_ctime.sec,
+		      ce->name);
 delayed:
 	return 0;
 }

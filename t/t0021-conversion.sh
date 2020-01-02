@@ -6,6 +6,7 @@ test_description='blob conversion via gitattributes'
 
 export GIT_TRACE2_PERF=/Users/jeffhost/work/t0021.log
 export GIT_TRACE2_PERF_BRIEF=1
+export GIT_TRACE_PACKET=/Users/jeffhost/work/t0021.log
 
 TEST_ROOT="$(pwd)"
 PATH=$PWD$PATH_SEP$PATH
