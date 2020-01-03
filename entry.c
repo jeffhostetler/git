@@ -484,6 +484,37 @@ static struct parallel_checkout_item *queue_ce_for_parallel_checkout(
 	return item;
 }
 
+/*
+ * Try to perform a parallel checkout on the set of queued items.
+ * Return 0 if successful.
+ * Return 1 on error.
+ */
+int run_parallel_checkout(struct checkout *state)
+{
+	if (!state->parallel_checkout)
+		return 0;
+	if (!state->parallel_checkout->nr)
+		return 0;
+	// TODO if nr < some limit, don't bother spinning up everything,
+	// TODO just call write_entry() in a loop.
+	// TODO
+	// TODO Warning: actually write_entry() isn't quite right.  it
+	// TODO will try to compute fresh conv_attrs using the pathname
+	// TODO given, so we need to pass it in somehow.
+	// TODO
+	// TODO Also, we're currently only handling streamables, so we've
+	// TODO only addressed half of the code within get_stream_filter()
+	// TODO in the call from write_entry().  So we need to refactor
+	// TODO get_stream_filter() a little.
+	// TODO
+	// TODO But the 2 calls to [async_]convert_to_working_tree()
+	// TODO have their own calls to convert_attrs() that also need
+	// TODO to be patched up.
+
+	// TODO Then there is the work of actually doing this in parallel...
+
+	return 0;
+}
 
 /*
  * Write the contents from ce out to the working tree.
