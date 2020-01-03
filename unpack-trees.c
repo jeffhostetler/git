@@ -407,6 +407,7 @@ static int check_updates(struct unpack_trees_options *o)
 	if (should_update_submodules() && o->update && !o->dry_run)
 		load_gitmodules_file(index, &state);
 
+	enable_parallel_checkout(&state);
 	enable_delayed_checkout(&state);
 	if (has_promisor_remote() && o->update && !o->dry_run) {
 		/*

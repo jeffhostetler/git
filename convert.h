@@ -5,6 +5,7 @@
 #define CONVERT_H
 
 #include "string-list.h"
+#include "json-writer.h"
 
 struct index_state;
 struct object_id;
@@ -130,16 +131,42 @@ int stream_filter(struct stream_filter *,
 		  const char *input, size_t *isize_p,
 		  char *output, size_t *osize_p);
 
-struct json_writer;
+/*****************************************************************
+ *
+ * Parallel Checkout Support
+ *
+ *****************************************************************/
 
-/*
- * Serialize the set of conversion attributes computed for a file
- * and relative to the current in-memory index and any in-progress
- * (merge) computations and/or any cached/non-cached per-directory
- * .gitattributes specifications.
- */
-void serialize_active_attributes_for_path(struct json_writer *jw,
-					  const struct index_state *istate,
-					  const char *path);
+struct parallel_checkout_item {
+	struct cache_entry *ce;
+	struct strbuf path;
+	/*
+	 * TODO In this version, each item (blob) gets its own
+	 * copy of the serialized conv_attrs used to populate
+	 * (smudge) the contents of the file.  When we send the
+	 * {path, oid, mode, etc.} to the worker process, we also
+	 * send the serialized conv_attrs.  A later optimization
+	 * could build a hashmap/dictionary of unique serializations
+	 * and send it to the workers before the first item and
+	 * reduce the amount of data sent to the workers.
+	 */
+	struct json_writer jw_conv_attrs;
+};
+
+#define PARALLEL_CHECKOUT_ITEM_INIT { NULL, NULL, JSON_WRITER_INIT }
+
+void parallel_checkout_item_free(struct parallel_checkout_item *item);
+
+struct parallel_checkout {
+	struct parallel_checkout_item **items;
+	int nr, alloc;
+};
+
+struct checkout;
+
+struct parallel_checkout_item *create_parallel_checkout_item_if_eligible(
+	const struct index_state *istate,
+	struct cache_entry *ce,
+	const char *path);
 
 #endif /* CONVERT_H */

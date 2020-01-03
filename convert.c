@@ -2051,10 +2051,10 @@ static void serialize_struct_convert_driver(struct json_writer *jw,
 }
 
 static void serialize_struct_conv_attrs(struct json_writer *jw,
-					const char *key,
 					const struct conv_attrs *ca)
 {
-	jw_object_inline_begin_object(jw, key);
+	jw_init(jw);
+	jw_object_begin(jw, 0);
 
 	if (ca->attr_action)
 		jw_object_intmax(jw, "attr_action", ca->attr_action);
@@ -2069,19 +2069,74 @@ static void serialize_struct_conv_attrs(struct json_writer *jw,
 		jw_object_string(jw, "working_tree_encoding",
 				 ca->working_tree_encoding);
 
+	/*
+	 * Deep serialize so that we capture the current settings
+	 * of the associated external driver, if set.
+	 */
 	if (ca->drv)
 		serialize_struct_convert_driver(jw, "drv", ca->drv);
 
 	jw_end(jw);
 }
 
-void serialize_active_attributes_for_path(struct json_writer *jw,
-					  const struct index_state *istate,
-					  const char *path)
+/*
+ * Create a parallel_checkout_item for this cache_entry if
+ * it is "parallel eligible".
+ *
+ * The term "parallel eligible" is purposefully vague and may
+ * expand later.  For the initial implementation, we say that
+ * streamable file blobs are eligible -- they only use builtin
+ * mechanisms.  Later improvements might want to handle blobs
+ * that need external filters (such as rot13) or even process
+ * filters (such as LFS).
+ *
+ * Return NULL if not eligible (and let the caller process
+ * it sequentially).
+ */
+struct parallel_checkout_item *create_parallel_checkout_item_if_eligible(
+	const struct index_state *istate,
+	struct cache_entry *ce,
+	const char *path)
 {
 	struct conv_attrs ca;
+	struct parallel_checkout_item *item;
 
 	convert_attrs(istate, &ca, path);
+	if (!is_streamable(&ca))
+		return NULL;
 
-	serialize_struct_conv_attrs(jw, "conv_attrs", &ca);
+	item = xcalloc(1, sizeof(struct parallel_checkout_item));
+
+	item->ce = ce;
+
+	/*
+	 * TODO Get rid of the path field if it is always the same as ce->name.
+	 */
+	strbuf_addstr(&item->path, path);
+
+	/*
+	 * Serialize the contents of `ca` now so that we capture the
+	 * net-net result of the current evaluation of the attribute
+	 * stack.  This allows the checkout worker that later
+	 * populates this item (file) to be completely independent of
+	 * the attribute stack.
+	 */
+	serialize_struct_conv_attrs(&item->jw_conv_attrs, &ca);
+
+	trace2_printf("parallel_checkout_item: %s,0%o,0x%x '%s' '%s'",
+		      oid_to_hex(&ce->oid),
+		      ce->ce_mode, ce->ce_flags,
+		      item->jw_conv_attrs.json.buf,
+		      path);
+
+	return item;
+}
+
+void parallel_checkout_item_free(struct parallel_checkout_item *item)
+{
+	if (!item)
+		return;
+	strbuf_release(&item->path);
+	jw_release(&item->jw_conv_attrs);
+	free(item);
 }

@@ -6,7 +6,6 @@
 #include "submodule.h"
 #include "progress.h"
 #include "fsmonitor.h"
-#include "json-writer.h"
 
 static void create_directories(const char *path, int path_len,
 			       const struct checkout *state)
@@ -268,22 +267,6 @@ static int write_entry(struct cache_entry *ce,
 	struct stat st;
 	const struct submodule *sub;
 
-	struct json_writer jw = JSON_WRITER_INIT;
-
-	jw_object_begin(&jw, 0);
-
-	// TODO If 'path' and 'name' always equal we can omit one of them.
-	jw_object_string(&jw, "path", path);
-	jw_object_string(&jw, "name", ce->name);
-	jw_object_string(&jw, "oid", oid_to_hex(&ce->oid));
-	jw_object_intmax(&jw, "flags", ce->ce_flags);
-	jw_object_intmax(&jw, "mode", ce->ce_mode);
-	serialize_active_attributes_for_path(&jw, state->istate, ce->name);
-
-	jw_end(&jw);
-	trace2_printf("write_entry: '%s'", jw.json.buf);
-	jw_release(&jw);
-
 	if (ce_mode_s_ifmt == S_IFREG) {
 		struct stream_filter *filter = get_stream_filter(state->istate, ce->name,
 								 &ce->oid);
@@ -459,6 +442,49 @@ static void mark_colliding_entries(const struct checkout *state,
 	}
 }
 
+void enable_parallel_checkout(struct checkout *state)
+{
+	// TODO guard this with some config settings,
+	// such as only actually enable this if the
+	// index has more then 100k entries for example.
+	// Or if the users asks for it.
+
+	if (!state->parallel_checkout) {
+		state->parallel_checkout = xcalloc(1, sizeof(struct parallel_checkout));
+	}
+}
+
+/*
+ * If this cache-entry is "parallel-eligible", allocate and queue an
+ * item for parallel checkout and return it.
+ */
+static struct parallel_checkout_item *queue_ce_for_parallel_checkout(
+	const struct checkout *state,
+	struct cache_entry *ce,
+	const char *path)
+{
+	struct parallel_checkout_item *item;
+
+	if (!state->parallel_checkout)
+		return NULL;
+
+	if ((ce->ce_mode & S_IFMT) != S_IFREG)
+		return NULL;
+
+	item = create_parallel_checkout_item_if_eligible(state->istate, ce,
+							 path);
+	if (!item)
+		return NULL;
+
+	ALLOC_GROW(state->parallel_checkout->items,
+		   state->parallel_checkout->nr + 1,
+		   state->parallel_checkout->alloc);
+	state->parallel_checkout->items[state->parallel_checkout->nr++] = item;
+
+	return item;
+}
+
+
 /*
  * Write the contents from ce out to the working tree.
  *
@@ -551,6 +577,8 @@ int checkout_entry(struct cache_entry *ce, const struct checkout *state,
 	create_directories(path.buf, path.len, state);
 	if (nr_checkouts)
 		(*nr_checkouts)++;
+	if (queue_ce_for_parallel_checkout(state, ce, path.buf))
+		return 0;
 	return write_entry(ce, path.buf, state, 0);
 }
 
