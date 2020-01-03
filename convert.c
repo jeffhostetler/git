@@ -1971,6 +1971,24 @@ static struct stream_filter *ident_filter(const struct object_id *oid)
 }
 
 /*
+ * Return 1 if the contents can be filtered during streaming.
+ * Return 0 if the whole object must be in-memory to be filtered.
+ */
+static int is_streamable(const struct conv_attrs *ca)
+{
+	if (ca->drv && (ca->drv->process || ca->drv->smudge || ca->drv->clean))
+		return 0;
+
+	if (ca->working_tree_encoding)
+		return 0;
+
+	if (ca->crlf_action == CRLF_AUTO || ca->crlf_action == CRLF_AUTO_CRLF)
+		return 0;
+
+	return 1;
+}
+
+/*
  * Return an appropriately constructed filter for the path, or NULL if
  * the contents cannot be filtered without reading the whole thing
  * in-core.
@@ -1986,13 +2004,7 @@ struct stream_filter *get_stream_filter(const struct index_state *istate,
 	struct stream_filter *filter = NULL;
 
 	convert_attrs(istate, &ca, path);
-	if (ca.drv && (ca.drv->process || ca.drv->smudge || ca.drv->clean))
-		return NULL;
-
-	if (ca.working_tree_encoding)
-		return NULL;
-
-	if (ca.crlf_action == CRLF_AUTO || ca.crlf_action == CRLF_AUTO_CRLF)
+	if (!is_streamable(&ca))
 		return NULL;
 
 	if (ca.ident)
