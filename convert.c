@@ -2090,6 +2090,14 @@ static void serialize_struct_conv_attrs(struct json_writer *jw,
  * that need external filters (such as rot13) or even process
  * filters (such as LFS).
  *
+ * TODO Since parallel checkout will alter the order that files are
+ * TODO populated on disk, should we always exclude files named
+ * TODO ".gitattributes" so that they are populated during the original
+ * TODO iteration -- and will be present and/or overwrite a dirty/stale
+ * TODO version in the worktree) before the parallel phase.  It seems like
+ * TODO if the ".gitattributes" files are populated during the
+ * TODO non-deterministic phase, we might have problems.
+ *
  * Return NULL if not eligible (and let the caller process
  * it sequentially).
  */
