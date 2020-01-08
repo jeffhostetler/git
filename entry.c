@@ -264,16 +264,7 @@ static int write_entry(struct cache_entry *ce,
 	size_t newsize = 0;
 	struct stat st;
 	const struct submodule *sub;
-
-	if (ce_mode_s_ifmt == S_IFREG) {
-		struct stream_filter *filter = get_stream_filter(state->istate, ce->name,
-								 &ce->oid);
-		if (filter &&
-		    !streaming_write_entry(ce, path, filter,
-					   state, to_tempfile,
-					   &fstat_done, &st))
-			goto finish;
-	}
+	struct stream_filter *filter;
 
 	switch (ce_mode_s_ifmt) {
 	case S_IFLNK:
@@ -296,6 +287,13 @@ static int write_entry(struct cache_entry *ce,
 		break;
 
 	case S_IFREG:
+		filter = get_stream_filter(state->istate, ce->name, &ce->oid);
+		if (filter &&
+		    !streaming_write_entry(ce, path, filter,
+					   state, to_tempfile,
+					   &fstat_done, &st))
+			break;
+
 		/*
 		 * We do not send the blob in case of a retry, so do not
 		 * bother reading it at all.
@@ -366,7 +364,6 @@ static int write_entry(struct cache_entry *ce,
 		return error("unknown file mode for %s in index", path);
 	}
 
-finish:
 	/* Flush cached lstat in fscache after writing to disk. */
 	flush_fscache();
 
