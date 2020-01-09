@@ -123,6 +123,9 @@ void convert_to_git_filter_fd(const struct index_state *istate,
 int would_convert_to_git_filter_fd(const struct index_state *istate,
 				   const char *path);
 
+void convert_attrs(const struct index_state *istate,
+		   struct conv_attrs *ca, const char *path);
+
 /*
  * Initialize the checkout metadata with the given values.  Any argument may be
  * NULL if it is not applicable.  The treeish should be a commit if that is
