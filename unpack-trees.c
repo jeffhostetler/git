@@ -16,6 +16,7 @@
 #include "fsmonitor.h"
 #include "object-store.h"
 #include "promisor-remote.h"
+#include "parallel-checkout.h"
 
 /*
  * Error messages expected by scripts out of plumbing commands such as
@@ -357,6 +358,179 @@ static void report_collided_checkout(struct index_state *index)
 	string_list_clear(&list, 0);
 }
 
+/*
+ * The original sequential checkout that was originally inlined
+ * within check_updates().
+ */
+static int check_updates_loop__classic(struct checkout *state,
+				       struct unpack_trees_options *o,
+				       struct progress *progress,
+				       unsigned *result_cnt)
+{
+	unsigned cnt = 0;
+	int errs = 0;
+	struct index_state *index = &o->result;
+	int i;
+
+	for (i = 0; i < index->cache_nr; i++) {
+		struct cache_entry *ce = index->cache[i];
+
+		if (ce->ce_flags & CE_UPDATE) {
+			if (ce->ce_flags & CE_WT_REMOVE)
+				BUG("both update and delete flags are set on %s",
+				    ce->name);
+			display_progress(progress, ++cnt);
+			ce->ce_flags &= ~CE_UPDATE;
+			if (o->update && !o->dry_run) {
+				errs |= checkout_entry(ce, state, NULL, NULL);
+			}
+		}
+	}
+
+	*result_cnt = cnt;
+	return errs;
+}
+
+#if 0 // temporary to quiet compiler warning
+/*
+ * Setup the checkout--helper(s) if appropriate and use the
+ * original sequential checkout but modified to let the helper
+ * process(es) load the blobs and write the file contents.
+ * This maintains the sequential loop semantics, but allows
+ * multiple blobs to be preloaded in parallel by different helper
+ * processes.
+ *
+ * Whether this is faster than the classic method probably
+ * depends on the data shape in the packfiles (such as delta-chain
+ * length and etc).
+ */
+static int check_updates_loop__parallel__easy_mode(
+	struct checkout *state,
+	struct unpack_trees_options *o,
+	struct progress *progress,
+	unsigned *result_cnt)
+{
+	int errs;
+
+	setup_parallel_checkout(state, o);
+	if (!state->parallel_checkout)
+		return check_updates_loop__classic(state, o, progress,
+						   result_cnt);
+
+	trace2_region_enter("pcheckout", "easy_mode", NULL);
+
+	errs = check_updates_loop__classic(state, o, progress, result_cnt);
+
+	trace2_region_leave("pcheckout", "easy_mode", NULL);
+
+	finish_parallel_checkout(state);
+
+	return errs;
+}
+#endif
+
+static int check_updates_loop__parallel__auto_mode(
+	struct checkout *state,
+	struct unpack_trees_options *o,
+	struct progress *progress,
+	unsigned *result_cnt)
+{
+	unsigned cnt = 0;
+	int errs = 0;
+	struct index_state *index = &o->result;
+	int i;
+
+	setup_parallel_checkout(state, o);
+	if (!state->parallel_checkout)
+		return check_updates_loop__classic(state, o, progress,
+						   result_cnt);
+
+	trace2_region_enter("pcheckout", "auto_mode", NULL);
+
+	assert(o->update);
+	assert(!o->dry_run);
+
+	/*
+	 * Pass 1: handle the cache-entries that were NOT eligible
+	 * so that we get the same sequential semantics WRT creating
+	 * the files and/or parent directories.
+	 */
+	for (i = 0; i < index->cache_nr; i++) {
+		struct cache_entry *ce = index->cache[i];
+
+		if (ce->parallel_checkout_item)
+			continue;
+
+		if (ce->ce_flags & CE_UPDATE) {
+			if (ce->ce_flags & CE_WT_REMOVE)
+				BUG("both update and delete flags are set on %s",
+				    ce->name);
+			display_progress(progress, ++cnt);
+			ce->ce_flags &= ~CE_UPDATE;
+			errs |= checkout_entry(ce, state, NULL, NULL);
+		}
+	}
+
+	/*
+	 * Pass 2: let the helper process(es) run in fully automatic
+	 * mode and write files in parallel as fast as they can.
+	 *
+	 * TODO if this fails do we want to run the classic loop on
+	 * the unpopulated items ??
+	 */
+	errs |= parallel_checkout__set_auto_write(state);
+	errs |= parallel_checkout__collect_results(state);
+
+	/*
+	 * Pass 3: fixup ce_flags for the items that the helpers updated
+	 * on disk.
+	 */
+	for (i = 0; i < index->cache_nr; i++) {
+		struct cache_entry *ce = index->cache[i];
+
+		if (!ce->parallel_checkout_item)
+			continue;
+
+		assert(ce->ce_flags & CE_UPDATE);
+		// TODO in the classic loop, it only calls checkout_entry()
+		// TODO for items with CE_UPDATE set.  and it calls BUG() if
+		// TODO CE_WT_REMOVE is also set.  But checkout_entry() tests
+		// TODO CE_WT_REMOVE -- which the classic code will never call.
+		// TODO are there other callers of checkout_entry() that do this?
+		assert(!(ce->ce_flags & CE_WT_REMOVE));
+
+		display_progress(progress, ++cnt);
+		ce->ce_flags &= ~CE_UPDATE;
+
+		// TODO get errno from item_result...
+//		errs |= checkout_entry(ce, state, NULL, NULL);
+	}
+
+	*result_cnt = cnt;
+
+	trace2_region_leave("pcheckout", "auto_mode", NULL);
+
+	finish_parallel_checkout(state);
+
+	return errs;
+}
+
+static int check_updates_loop(struct checkout *state,
+			      struct unpack_trees_options *o,
+			      struct progress *progress,
+			      unsigned *result_cnt)
+{
+	int errs;
+
+	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
+//	errs = check_updates_loop__classic(state, o, progress, result_cnt);
+//	errs = check_updates_loop__parallel__easy_mode(state, o, progress, result_cnt);
+	errs = check_updates_loop__parallel__auto_mode(state, o, progress, result_cnt);
+	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
+
+	return errs;
+}
+
 static int check_updates(struct unpack_trees_options *o)
 {
 	unsigned cnt = 0;
@@ -422,22 +596,12 @@ static int check_updates(struct unpack_trees_options *o)
 						   to_fetch.oid, to_fetch.nr);
 		oid_array_clear(&to_fetch);
 	}
-	for (i = 0; i < index->cache_nr; i++) {
-		struct cache_entry *ce = index->cache[i];
 
-		if (ce->ce_flags & CE_UPDATE) {
-			if (ce->ce_flags & CE_WT_REMOVE)
-				BUG("both update and delete flags are set on %s",
-				    ce->name);
-			display_progress(progress, ++cnt);
-			ce->ce_flags &= ~CE_UPDATE;
-			if (o->update && !o->dry_run) {
-				errs |= checkout_entry(ce, &state, NULL, NULL);
-			}
-		}
-	}
+	errs |= check_updates_loop(&state, o, progress, &cnt);
+
 	stop_progress(&progress);
 	errs |= finish_delayed_checkout(&state, NULL);
+
 	if (o->update)
 		git_attr_set_direction(GIT_ATTR_CHECKIN);
 

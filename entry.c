@@ -6,6 +6,7 @@
 #include "submodule.h"
 #include "progress.h"
 #include "fsmonitor.h"
+#include "parallel-checkout.h"
 
 static void create_directories(const char *path, int path_len,
 			       const struct checkout *state)
@@ -522,6 +523,10 @@ int checkout_entry(struct cache_entry *ce, const struct checkout *state,
 	create_directories(path.buf, path.len, state);
 	if (nr_checkouts)
 		(*nr_checkouts)++;
+
+	if (state->parallel_checkout && ce->parallel_checkout_item)
+		return parallel_checkout__write_entry(state, ce);
+
 	return write_entry(ce, path.buf, state, 0);
 }
 

@@ -148,6 +148,7 @@ struct cache_entry {
 	unsigned int ce_namelen;
 	unsigned int index;	/* for link extension */
 	struct object_id oid;
+	void *parallel_checkout_item; /* we do not own this */
 	char name[FLEX_ARRAY]; /* more */
 };
 
@@ -969,7 +970,7 @@ extern int core_parallel_checkout;
  * process overhead.  We assume that we need to modify more than
  * this number of files to make it worth the extra effort.
  */
-#define DEFAULT_PARALLEL_CHECKOUT_THRESHOLD 10000
+#define DEFAULT_PARALLEL_CHECKOUT_THRESHOLD 1
 
 extern int core_parallel_checkout_threshold;
 
@@ -1691,6 +1692,7 @@ struct checkout {
 	const char *base_dir;
 	int base_dir_len;
 	struct delayed_checkout *delayed_checkout;
+	struct parallel_checkout *parallel_checkout;
 	unsigned force:1,
 		 quiet:1,
 		 not_new:1,
