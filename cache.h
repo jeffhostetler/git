@@ -966,6 +966,16 @@ extern int core_sparse_checkout_cone;
 extern int core_parallel_checkout;
 
 /*
+ * Default threshold for actually attempting a parallel checkout.
+ * This is an arbitrarily chosen value to account for thread and
+ * process overhead.  We assume that we need to modify more than
+ * this number of files to make it worth the extra effort.
+ */
+#define DEFAULT_PARALLEL_CHECKOUT_THRESHOLD 1000
+
+extern int core_parallel_checkout_threshold;
+
+/*
  * Include broken refs in all ref iterations, which will
  * generally choke dangerous operations rather than letting
  * them silently proceed without taking the broken ref into

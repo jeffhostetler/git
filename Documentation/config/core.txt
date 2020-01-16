@@ -629,3 +629,11 @@ core.abbrev::
 
 core.parallelCheckout::
 	A boolean to enable parallel checkout.
+
+core.parallelCheckoutThreshold::
+	Set the threshold for actually attempting a parallel checkout.
+	For checkouts only modifying a small number of files, a normal
+	(sequential) checkout should be faster because it avoids thread
+	and process overhead.  When enabled, parallel checkout will not
+	be attempted when the number of files to be updated is less than
+	the threshold.	Defaults to 1,000 when unset or set to 0.

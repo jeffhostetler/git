@@ -1409,6 +1409,13 @@ static int git_default_core_config(const char *var, const char *value, void *cb)
 		return 0;
 	}
 
+	if (!strcmp(var, "core.parallelcheckoutthreshold")) {
+		int x = git_config_int(var, value);
+		core_parallel_checkout_threshold =
+			(x > 0) ? x : DEFAULT_PARALLEL_CHECKOUT_THRESHOLD;
+		return 0;
+	}
+
 	/* Add other config variables here and to Documentation/config.txt. */
 	return platform_core_config(var, value, cb);
 }
