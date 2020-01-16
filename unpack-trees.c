@@ -16,6 +16,7 @@
 #include "fsmonitor.h"
 #include "object-store.h"
 #include "promisor-remote.h"
+#include "parallel-checkout.h"
 
 /*
  * Error messages expected by scripts out of plumbing commands such as
@@ -422,6 +423,11 @@ static int check_updates(struct unpack_trees_options *o)
 						   to_fetch.oid, to_fetch.nr);
 		oid_array_clear(&to_fetch);
 	}
+
+	setup_parallel_checkout(&state);
+	if (state.parallel_checkout)
+		trace2_region_enter("pcheckout", "main_loop", NULL);
+
 	for (i = 0; i < index->cache_nr; i++) {
 		struct cache_entry *ce = index->cache[i];
 
@@ -436,8 +442,15 @@ static int check_updates(struct unpack_trees_options *o)
 			}
 		}
 	}
+
+	if (state.parallel_checkout)
+		trace2_region_leave("pcheckout", "main_loop", NULL);
+
 	stop_progress(&progress);
 	errs |= finish_delayed_checkout(&state, NULL);
+
+	finish_parallel_checkout(&state);
+
 	if (o->update)
 		git_attr_set_direction(GIT_ATTR_CHECKIN);
 
