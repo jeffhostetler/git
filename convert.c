@@ -1523,6 +1523,14 @@ int convert_to_working_tree(const struct index_state *istate,
 	return convert_to_working_tree_internal(istate, path, src, len, dst, 0, meta, NULL);
 }
 
+int convert_to_working_tree_ca(const struct conv_attrs *ca,
+			       const char *path, const char *src,
+			       size_t len, struct strbuf *dst,
+			       const struct checkout_metadata *meta)
+{
+	return convert_to_working_tree_internal_ca(ca, path, src, len, dst, 0, meta, NULL);
+}
+
 int renormalize_buffer(const struct index_state *istate, const char *path,
 		       const char *src, size_t len, struct strbuf *dst)
 {
