@@ -93,6 +93,9 @@ int convert_to_git(const struct index_state *istate,
 int convert_to_working_tree(const struct index_state *istate,
 			    const char *path, const char *src,
 			    size_t len, struct strbuf *dst);
+int convert_to_working_tree_ca(const struct conv_attrs *ca,
+			       const char *path, const char *src,
+			       size_t len, struct strbuf *dst);
 int async_convert_to_working_tree(const struct index_state *istate,
 				  const char *path, const char *src,
 				  size_t len, struct strbuf *dst,
