@@ -29,12 +29,14 @@ struct subprocess_entry *subprocess_find_entry(struct hashmap *hashmap, const ch
 
 int subprocess_read_status(int fd, struct strbuf *status)
 {
+	char buffer[LARGE_PACKET_MAX];
 	struct strbuf **pair;
 	char *line;
 	int len;
 
 	for (;;) {
-		len = packet_read_line_gently(fd, NULL, &line);
+		len = packet_read_line_gently_r(fd, NULL, &line,
+						buffer, sizeof(buffer));
 		if ((len < 0) || !line)
 			break;
 		pair = strbuf_split_str(line, '=', 2);
@@ -115,6 +117,7 @@ static int handshake_version(struct child_process *process,
 			     const char *welcome_prefix, int *versions,
 			     int *chosen_version)
 {
+	char buffer[LARGE_PACKET_MAX];
 	int version_scratch;
 	int i;
 	char *line;
@@ -134,17 +137,20 @@ static int handshake_version(struct child_process *process,
 	if (packet_flush_gently(process->in))
 		return error("Could not write flush packet");
 
-	if (!(line = packet_read_line(process->out, NULL)) ||
+	if (!(line = packet_read_line_r(process->out, NULL,
+					buffer, sizeof(buffer))) ||
 	    !skip_prefix(line, welcome_prefix, &p) ||
 	    strcmp(p, "-server"))
 		return error("Unexpected line '%s', expected %s-server",
 			     line ? line : "<flush packet>", welcome_prefix);
-	if (!(line = packet_read_line(process->out, NULL)) ||
+	if (!(line = packet_read_line_r(process->out, NULL,
+					buffer, sizeof(buffer))) ||
 	    !skip_prefix(line, "version=", &p) ||
 	    strtol_i(p, 10, chosen_version))
 		return error("Unexpected line '%s', expected version",
 			     line ? line : "<flush packet>");
-	if ((line = packet_read_line(process->out, NULL)))
+	if ((line = packet_read_line_r(process->out, NULL,
+				       buffer, sizeof(buffer))))
 		return error("Unexpected line '%s', expected flush", line);
 
 	/* Check to make sure that the version received is supported */
@@ -162,6 +168,7 @@ static int handshake_capabilities(struct child_process *process,
 				  struct subprocess_capability *capabilities,
 				  unsigned int *supported_capabilities)
 {
+	char buffer[LARGE_PACKET_MAX];
 	int i;
 	char *line;
 
@@ -173,7 +180,8 @@ static int handshake_capabilities(struct child_process *process,
 	if (packet_flush_gently(process->in))
 		return error("Could not write flush packet");
 
-	while ((line = packet_read_line(process->out, NULL))) {
+	while ((line = packet_read_line_r(process->out, NULL,
+					  buffer, sizeof(buffer)))) {
 		const char *p;
 		if (!skip_prefix(line, "capability=", &p))
 			continue;
