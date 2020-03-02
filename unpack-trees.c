@@ -391,11 +391,12 @@ static int check_updates_loop__classic(struct checkout *state,
 	return errs;
 }
 
-#if 0 // temporary to quiet compiler warning
 /*
  * Setup the checkout--helper(s) if appropriate and use the
  * original sequential checkout but modified to let the helper
- * process(es) load the blobs and write the file contents.
+ * process(es) load the blobs in the background and synchronously
+ * write the file contents.
+ *
  * This maintains the sequential loop semantics, but allows
  * multiple blobs to be preloaded in parallel by different helper
  * processes.
@@ -404,7 +405,7 @@ static int check_updates_loop__classic(struct checkout *state,
  * depends on the data shape in the packfiles (such as delta-chain
  * length and etc).
  */
-static int check_updates_loop__parallel__easy_mode(
+static int check_updates_loop__classic_with_helper(
 	struct checkout *state,
 	struct unpack_trees_options *o,
 	struct progress *progress,
@@ -413,21 +414,15 @@ static int check_updates_loop__parallel__easy_mode(
 	int errs;
 
 	setup_parallel_checkout(state, o);
-	if (!state->parallel_checkout)
-		return check_updates_loop__classic(state, o, progress,
-						   result_cnt);
-
-	trace2_region_enter("pcheckout", "easy_mode", NULL);
 
 	errs = check_updates_loop__classic(state, o, progress, result_cnt);
-
-	trace2_region_leave("pcheckout", "easy_mode", NULL);
 
 	finish_parallel_checkout(state);
 
 	return errs;
 }
-#endif
+
+#if 0 // temporary to quiet compiler warning
 
 static int check_updates_loop__parallel__auto_mode(
 	struct checkout *state,
@@ -514,6 +509,7 @@ static int check_updates_loop__parallel__auto_mode(
 
 	return errs;
 }
+#endif
 
 static int check_updates_loop(struct checkout *state,
 			      struct unpack_trees_options *o,
@@ -522,11 +518,9 @@ static int check_updates_loop(struct checkout *state,
 {
 	int errs;
 
-	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
 //	errs = check_updates_loop__classic(state, o, progress, result_cnt);
-//	errs = check_updates_loop__parallel__easy_mode(state, o, progress, result_cnt);
-	errs = check_updates_loop__parallel__auto_mode(state, o, progress, result_cnt);
-	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
+	errs = check_updates_loop__classic_with_helper(state, o, progress, result_cnt);
+//	errs = check_updates_loop__parallel__auto_mode(state, o, progress, result_cnt);
 
 	return errs;
 }
@@ -597,7 +591,9 @@ static int check_updates(struct unpack_trees_options *o)
 		oid_array_clear(&to_fetch);
 	}
 
+	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
 	errs |= check_updates_loop(&state, o, progress, &cnt);
+	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
 
 	stop_progress(&progress);
 	errs |= finish_delayed_checkout(&state, NULL);

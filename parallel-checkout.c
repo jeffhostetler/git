@@ -587,7 +587,6 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 	int err = 0;
 
 	trace2_region_enter("pcheckout", "send_items", NULL);
-	trace2_data_intmax("pcheckout", NULL, "items", pc->nr);
 
 	// TODO decide if these sigchain calls are actually needed.
 	sigchain_push(SIGPIPE, SIG_IGN);
@@ -651,9 +650,6 @@ static int launch_all_helpers(struct parallel_checkout *pc)
 	nr_preload_per_helper_wanted = (nr_writers_per_helper_wanted * 2) + 10;
 	
 	trace2_region_enter("pcheckout", "launch_helpers", NULL);
-	trace2_data_intmax("pcheckout", NULL, "helpers", nr_helpers_wanted);
-	trace2_data_intmax("pcheckout", NULL, "writers", nr_writers_per_helper_wanted);
-	trace2_data_intmax("pcheckout", NULL, "preload", nr_preload_per_helper_wanted);
 
 	ALLOC_GROW(helper_pool.array, nr_helpers_wanted, helper_pool.alloc);
 
@@ -682,22 +678,22 @@ void setup_parallel_checkout(struct checkout *state,
 	if (!core_parallel_checkout)
 		return;
 
+	trace2_region_enter("pcheckout", "setup", NULL);
+
 	/*
 	 * Disallow parallel-checkout if this obscure flag is turned on
 	 * since it makes the work to be done even more dependent on the
 	 * current state of the working directory.
 	 */
 	if (state->not_new)
-		return;
+		goto done;
 
 	/*
 	 * Disallow parallel-checkout if we're not actually going to
 	 * populate the worktree.
 	 */
 	if (!o->update || o->dry_run)
-		return;
-
-	trace2_region_enter("pcheckout", "setup", NULL);
+		goto done;
 
 	/*
 	 * First-order approximation of the total amount of work required.
@@ -809,15 +805,16 @@ void setup_parallel_checkout(struct checkout *state,
 		goto done;
 	}
 
-#if 0
-	// TODO make this an optional step when we can classify
-	// TODO the type of checkout...
-	if (enable_auto_async_write_on_all_helpers(pc)) {
-		free_parallel_checkout(pc);
-		stop_all_helpers();
-		goto done;
-	}
-#endif
+	trace2_data_intmax("pcheckout", NULL, "ce.nr", state->istate->cache_nr);
+	trace2_data_intmax("pcheckout", NULL, "ce.update", nr_files);
+	trace2_data_intmax("pcheckout", NULL, "ce.eligible", pc->nr);
+
+	trace2_data_intmax("pcheckout", NULL, "helper.processes",
+			   nr_helpers_wanted);
+	trace2_data_intmax("pcheckout", NULL, "helper.writer_threads",
+			   nr_writers_per_helper_wanted);
+	trace2_data_intmax("pcheckout", NULL, "helper.preload_count",
+			   nr_preload_per_helper_wanted);
 
 	/*
 	 * Actually enable parallel checkout.
@@ -825,6 +822,9 @@ void setup_parallel_checkout(struct checkout *state,
 	state->parallel_checkout = pc;
 
 done:
+	trace2_data_intmax("pcheckout", NULL, "helper.enabled",
+			   !!state->parallel_checkout);
+
 	trace2_region_leave("pcheckout", "setup", NULL);
 }
 
