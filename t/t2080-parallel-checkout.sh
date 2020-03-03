@@ -4,6 +4,10 @@ test_description='Parallel Checkout'
 
 . ./test-lib.sh
 
+# Create some raw data files with well-known properties.
+# These will not be under version control, but rather be used
+# to create test cases later.
+
 setup () {
 	git config --local core.parallelcheckoutthreshold 1
 
@@ -25,50 +29,66 @@ setup () {
 	cat LF.DATA | iconv -f UTF-8 -t UTF-16LE >LF.UTF16LE.DATA
 	cat LF.DATA | iconv -f UTF-8 -t UTF-32LE >LF.UTF32LE.DATA
 
-	printf "\$Id: 7c8e93673a55d18460dc3ca2866f2236fb20a172 \$\nLINEONE\n"    >A.LF.IDENT.DATA
-	printf "\$Id\$\nLINEONE\n"                                               >B.LF.IDENT.DATA
-	printf "\$Id: 0000000000000000000000000000000000000000 \$\nLINEONE\n"    >C.LF.IDENT.DATA
-	printf "\$Id: ffffffffffffffffffffffffffffffffffffffff \$\nLINEONE\n"    >D.LF.IDENT.DATA
+	printf "\$Id: 7c8e93673a55d18460dc3ca2866f2236fb20a172 \$\nLINEONE\n" \
+	       >A.LF.IDENT.DATA
+	printf "\$Id\$\nLINEONE\n"                                            \
+	       >B.LF.IDENT.DATA
+	printf "\$Id: 0000000000000000000000000000000000000000 \$\nLINEONE\n" \
+	       >C.LF.IDENT.DATA
+	printf "\$Id: ffffffffffffffffffffffffffffffffffffffff \$\nLINEONE\n" \
+	       >D.LF.IDENT.DATA
 }
 
-setup_eol () {
-	git checkout base
-	git branch verify_eol_handling
-	git checkout verify_eol_handling
+test_expect_success setup '
+	setup
+'
 
-	cat >.gitattributes <<-\EOF
+# The following tests each commit a series of files and rules to
+# smudge them.
+#
+# Delete and recreate the files using `reset --hard`.
+# This calls `check_updates_loop` to repopulate the files.
+#
+# Restore them once with the classic sequential logic.
+# Then repeat and let `checkout--helper` assist.
+#
+# The point here is to verify that both methods give the same answer
+# and that the conv_attr data sent to the helper contains sufficient
+# information to smudge files properly (and without access to the
+# index or attribute stack).
+#
+# WARNING: I'm using test_cmp_bin() here rather than test_cmp() because
+# WARNING: test_cmp() is a wrapper that calls "test-tool cmp" which calls
+# WARNING: strbuf_getline() and it ***EATS*** CRLF vs LF differences and
+# WARNING: makes most of these tests useless.
+
+test_expect_success verify_eol_handling '
+	test_when_finished "rm -f actual* expect*" &&
+
+	git checkout base &&
+	git branch verify_eol_handling &&
+	git checkout verify_eol_handling &&
+
+	cat >.gitattributes <<-\EOF &&
 		*.dash-text     -text
 		*.text-lf       text eol=lf
 		*.text-crlf     text eol=crlf
 	EOF
-	git add .gitattributes
-	git commit -m "attrs"
+	git add .gitattributes &&
+	git commit -m "attrs" &&
 
-	printf "LINEONE\nLINETWO\nLINETHREE\n"         >LF.DATA
-	printf "LINEONE\r\nLINETWO\r\nLINETHREE\r\n" >CRLF.DATA
+	printf "LINEONE\nLINETWO\nLINETHREE\n"         >LF.DATA &&
+	printf "LINEONE\r\nLINETWO\r\nLINETHREE\r\n" >CRLF.DATA &&
 
-	cp LF.DATA   f_01.dash-text
-	cp LF.DATA   f_02.text-lf
-	cp LF.DATA   f_03.text-crlf
+	cp LF.DATA   f_01.dash-text &&
+	cp LF.DATA   f_02.text-lf &&
+	cp LF.DATA   f_03.text-crlf &&
 
-	cp CRLF.DATA f_04.dash-text
-	cp CRLF.DATA f_05.text-lf
-	cp CRLF.DATA f_06.text-crlf
+	cp CRLF.DATA f_04.dash-text &&
+	cp CRLF.DATA f_05.text-lf &&
+	cp CRLF.DATA f_06.text-crlf &&
 
-	git add f_*
-	git commit -m "setup"
-}
-
-confirm_eol_smudging () {
-	test_cmp f_01.dash-text LF.DATA
-	test_cmp f_02.text-lf   LF.DATA
-	test_cmp f_03.text-crlf CRLF.DATA
-
-	test_cmp f_04.dash-text CRLF.DATA
-	test_cmp f_05.text-lf   LF.DATA
-	test_cmp f_06.text-crlf CRLF.DATA
-
-	cat >expect <<-\EOF
+	cat >expect <<-\EOF &&
 		i/crlf w/crlf attr/-text f_04.dash-text
 		i/lf w/crlf attr/text eol=crlf f_03.text-crlf
 		i/lf w/crlf attr/text eol=crlf f_06.text-crlf
@@ -77,52 +97,71 @@ confirm_eol_smudging () {
 		i/lf w/lf attr/text eol=lf f_05.text-lf
 	EOF
 
-	git ls-files f_* --eol |
-	sed -e "s/	/ /g" -e "s/  */ /g" |
-	sort >actual &&
+	git add f_* &&
+	git commit -m "setup" &&
 
-	test_cmp actual expect
-}
+	rm -rf f_* &&
+	git -c core.parallelcheckout=0 reset --hard &&
 
-setup_encoding () {
-	git checkout base
-	git branch verify_encoding_handling
-	git checkout verify_encoding_handling
+	test_cmp_bin f_01.dash-text LF.DATA &&
+	test_cmp_bin f_02.text-lf   LF.DATA &&
+	test_cmp_bin f_03.text-crlf CRLF.DATA &&
+	test_cmp_bin f_04.dash-text CRLF.DATA &&
+	test_cmp_bin f_05.text-lf   LF.DATA &&
+	test_cmp_bin f_06.text-crlf CRLF.DATA &&
 
-	cat >.gitattributes <<-\EOF
+	git ls-files f_* --eol >actual_0 &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_0 | sort >actual &&
+	test_cmp_bin actual expect &&
+
+	# TODO Consider adding a GIT_TEST_ envvar to output data to let
+	# TODO us confirm that the checkout--helper code path was taken
+	# TODO when populating these files.
+
+	rm -rf f_* &&
+	git -c core.parallelcheckout=1 reset --hard &&
+
+	test_cmp_bin f_01.dash-text LF.DATA &&
+	test_cmp_bin f_02.text-lf   LF.DATA &&
+	test_cmp_bin f_03.text-crlf CRLF.DATA &&
+	test_cmp_bin f_04.dash-text CRLF.DATA &&
+	test_cmp_bin f_05.text-lf   LF.DATA &&
+	test_cmp_bin f_06.text-crlf CRLF.DATA &&
+
+	git ls-files f_* --eol >actual_raw &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_raw | sort >actual &&
+	test_cmp_bin actual expect
+'
+
+test_expect_success verify_encoding_handling '
+	test_when_finished "rm -f actual* expect*" &&
+
+	git checkout base &&
+	git branch verify_encoding_handling &&
+	git checkout verify_encoding_handling &&
+
+	cat >.gitattributes <<-\EOF &&
 		*.text-lf-utf8     text eol=lf working-tree-encoding=utf-8
 		*.text-lf-utf16le  text eol=lf working-tree-encoding=utf-16le
 		*.text-lf-utf32le  text eol=lf working-tree-encoding=utf-32le
 	EOF
-	git add .gitattributes
-	git commit -m "attrs"
+	git add .gitattributes &&
+	git commit -m "attrs" &&
 
-	cp LF.UTF8.DATA    f_01.text-lf-utf8
-	cp LF.UTF16LE.DATA f_02.text-lf-utf16le
-	cp LF.UTF32LE.DATA f_03.text-lf-utf32le
+	cp LF.UTF8.DATA    f_01.text-lf-utf8 &&
+	cp LF.UTF16LE.DATA f_02.text-lf-utf16le &&
+	cp LF.UTF32LE.DATA f_03.text-lf-utf32le &&
 
-	git add f_*
-	git commit -m "setup"
-}
+	git add f_* &&
+	git commit -m "setup" &&
 
-confirm_encoding_smudging () {
-	test_cmp f_01.text-lf-utf8    LF.UTF8.DATA
-	test_cmp f_02.text-lf-utf16le LF.UTF16LE.DATA
-	test_cmp f_03.text-lf-utf32le LF.UTF32LE.DATA
-
-	cat >expect <<-\EOF
+	cat >expect_eol <<-\EOF &&
 		i/lf w/-text attr/text eol=lf f_02.text-lf-utf16le
 		i/lf w/-text attr/text eol=lf f_03.text-lf-utf32le
 		i/lf w/lf attr/text eol=lf f_01.text-lf-utf8
 	EOF
 
-	git ls-files f_* --eol |
-	sed -e "s/	/ /g" -e "s/  */ /g" |
-	sort >actual
-
-	test_cmp actual expect
-
-	cat >expect <<-\EOF
+	cat >expect_all <<-\EOF &&
 		f_01.text-lf-utf8: eol: lf
 		f_01.text-lf-utf8: text: set
 		f_01.text-lf-utf8: working-tree-encoding: utf-8
@@ -134,51 +173,68 @@ confirm_encoding_smudging () {
 		f_03.text-lf-utf32le: working-tree-encoding: utf-32le
 	EOF
 
-	git check-attr --all f_* | sort >actual
+	rm -rf f_* &&
+	git -c core.parallelcheckout=0 reset --hard &&
 
-	test_cmp actual expect
-}
+	test_cmp_bin f_01.text-lf-utf8    LF.UTF8.DATA &&
+	test_cmp_bin f_02.text-lf-utf16le LF.UTF16LE.DATA &&
+	test_cmp_bin f_03.text-lf-utf32le LF.UTF32LE.DATA &&
 
-setup_ident () {
-	git checkout base
-	git branch verify_ident_handling
-	git checkout verify_ident_handling
+	git ls-files f_* --eol >actual_raw &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_raw | sort >actual_eol &&
+	test_cmp_bin actual_eol expect_eol &&
 
-	cat >.gitattributes <<-\EOF
+	git check-attr --all f_* | sort >actual_all &&
+	test_cmp_bin actual_all expect_all &&
+
+	# TODO Consider adding a GIT_TEST_ envvar to output data to let
+	# TODO us confirm that the checkout--helper code path was taken
+	# TODO when populating these files.
+
+	rm -rf f_* &&
+	git -c core.parallelcheckout=1 reset --hard &&
+
+	test_cmp_bin f_01.text-lf-utf8    LF.UTF8.DATA &&
+	test_cmp_bin f_02.text-lf-utf16le LF.UTF16LE.DATA &&
+	test_cmp_bin f_03.text-lf-utf32le LF.UTF32LE.DATA &&
+
+	git ls-files f_* --eol >actual_raw &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_raw | sort >actual_eol &&
+	test_cmp_bin actual_eol expect_eol &&
+
+	git check-attr --all f_* | sort >actual_all &&
+	test_cmp_bin actual_all expect_all
+'
+
+test_expect_success verify_ident_handling '
+	test_when_finished "rm -f actual expect" &&
+
+	git checkout base &&
+	git branch verify_ident_handling &&
+	git checkout verify_ident_handling &&
+
+	cat >.gitattributes <<-\EOF &&
 		*.text-lf-ident    text eol=lf ident
 	EOF
-	git add .gitattributes
-	git commit -m "attrs"
+	git add .gitattributes &&
+	git commit -m "attrs" &&
 
-	cp A.LF.IDENT.DATA    f_01.text-lf-ident
-	cp B.LF.IDENT.DATA    f_02.text-lf-ident
-	cp C.LF.IDENT.DATA    f_03.text-lf-ident
-	cp D.LF.IDENT.DATA    f_04.text-lf-ident
+	cp A.LF.IDENT.DATA    f_01.text-lf-ident &&
+	cp B.LF.IDENT.DATA    f_02.text-lf-ident &&
+	cp C.LF.IDENT.DATA    f_03.text-lf-ident &&
+	cp D.LF.IDENT.DATA    f_04.text-lf-ident &&
 
-	git add f_*
-	git commit -m "setup"
-}
+	git add f_* &&
+	git commit -m "setup" &&
 
-confirm_ident_smudging () {
-	test_cmp f_01.text-lf-ident    A.LF.IDENT.DATA
-	test_cmp f_02.text-lf-ident    A.LF.IDENT.DATA
-	test_cmp f_03.text-lf-ident    A.LF.IDENT.DATA
-	test_cmp f_04.text-lf-ident    A.LF.IDENT.DATA
-
-	cat >expect <<-\EOF
+	cat >expect_eol <<-\EOF &&
 		i/lf w/lf attr/text eol=lf f_01.text-lf-ident
 		i/lf w/lf attr/text eol=lf f_02.text-lf-ident
 		i/lf w/lf attr/text eol=lf f_03.text-lf-ident
 		i/lf w/lf attr/text eol=lf f_04.text-lf-ident
 	EOF
 
-	git ls-files f_* --eol |
-	sed -e "s/	/ /g" -e "s/  */ /g" |
-	sort >actual
-
-	test_cmp actual expect
-
-	cat >expect <<-\EOF
+	cat >expect_all <<-\EOF &&
 		f_01.text-lf-ident: eol: lf
 		f_01.text-lf-ident: ident: set
 		f_01.text-lf-ident: text: set
@@ -193,32 +249,20 @@ confirm_ident_smudging () {
 		f_04.text-lf-ident: text: set
 	EOF
 
-	git check-attr --all f_* | sort >actual
-
-	test_cmp actual expect
-}
-
-test_expect_success setup '
-	setup
-'
-
-# Commit a series of files with LF and CRLF and rules to smudge them.
-#
-# Delete and recreate the files using `reset --hard`.
-# This calls `check_updates_loop` to repopulate the files.
-#
-# Restore them once with the classic sequential logic.
-# Then repeat and let `checkout--helper` assist.
-#
-# The point here is to verify that both give the same answer
-# WRT simple file population and basic smudging.
-#
-test_expect_success verify_eol_handling '
-	setup_eol &&
-
 	rm -rf f_* &&
 	git -c core.parallelcheckout=0 reset --hard &&
-	confirm_eol_smudging &&
+
+	test_cmp_bin f_01.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_02.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_03.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_04.text-lf-ident    A.LF.IDENT.DATA &&
+
+	git ls-files f_* --eol >actual_raw &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_raw | sort >actual_eol &&
+	test_cmp_bin actual_eol expect_eol &&
+
+	git check-attr --all f_* | sort >actual_all &&
+	test_cmp_bin actual_all expect_all &&
 
 	# TODO Consider adding a GIT_TEST_ envvar to output data to let
 	# TODO us confirm that the checkout--helper code path was taken
@@ -226,39 +270,73 @@ test_expect_success verify_eol_handling '
 
 	rm -rf f_* &&
 	git -c core.parallelcheckout=1 reset --hard &&
-	confirm_eol_smudging
+
+	test_cmp_bin f_01.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_02.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_03.text-lf-ident    A.LF.IDENT.DATA &&
+	test_cmp_bin f_04.text-lf-ident    A.LF.IDENT.DATA &&
+
+	git ls-files f_* --eol >actual_raw &&
+	sed -e "s/	/ /g" -e "s/  */ /g" <actual_raw | sort >actual_eol &&
+	test_cmp_bin actual_eol expect_eol &&
+
+	git check-attr --all f_* | sort >actual_all &&
+	test_cmp_bin actual_all expect_all
 '
 
-test_expect_success verify_encoding_handling '
-	setup_encoding &&
+# When there are nested .gitattribute files, the `check_updates_loop` code
+# uses `read_blob_data_from_index` to fetch each of the attribute files and
+# build the path-relative attribute stack during the cache-entry iteration.
+# This complicates traditional multithreaded ODB access.
+#
+# The point of this test is to ensure that properly crafted conv_attr data
+# is computed and sent to the helper.  We want that both the classic and the
+# helper version to produce the same result.
 
-	rm -rf f_* &&
-	git -c core.parallelcheckout=0 reset --hard &&
-	confirm_encoding_smudging &&
+test_expect_success verify_nested_attr '
+	test_when_finished "rm -f actual* expect*" &&
 
-	# TODO Consider adding a GIT_TEST_ envvar to output data to let
-	# TODO us confirm that the checkout--helper code path was taken
-	# TODO when populating these files.
+	git checkout base &&
+	git branch verify_nested_attr &&
+	git checkout verify_nested_attr &&
 
-	rm -rf f_* &&
-	git -c core.parallelcheckout=1 reset --hard &&
-	confirm_encoding_smudging
-'
+	cat >.gitattributes <<-\EOF &&
+		*.text    text eol=lf
+	EOF
+	git add .gitattributes &&
+	git commit -m "attrs" &&
 
-test_expect_success verify_ident_handling '
-	setup_ident &&
+	mkdir d1 d1/d2 &&
+	cp LF.DATA d1/d2/f_01.text &&
+	cp LF.DATA d1/d2/f_02.text &&
+	git add d1 &&
 
-	rm -rf f_* &&
-	git -c core.parallelcheckout=0 reset --hard &&
-	confirm_ident_smudging &&
+	git commit -m "setup" &&
 
-	# TODO Consider adding a GIT_TEST_ envvar to output data to let
-	# TODO us confirm that the checkout--helper code path was taken
-	# TODO when populating these files.
+	cat >d1/.gitattributes <<-\EOF &&
+		*.text    text eol=crlf
+	EOF
+	cat >d1/d2/.gitattributes <<-\EOF &&
+		*.text    text eol=crlf
+	EOF
+	git add d1 &&
+	git commit -m "attrs2" &&
 
-	rm -rf f_* &&
-	git -c core.parallelcheckout=1 reset --hard &&
-	confirm_ident_smudging
+	# Switch back to the "base" branch to delete all of the files
+	# created in the current branch and the switch back to this
+	# branch to have them created with the new (attrs2) attributes.
+
+	git checkout base &&
+	git -c core.parallelcheckout=0 checkout verify_nested_attr &&
+
+	test_cmp_bin d1/d2/f_01.text CRLF.DATA &&
+	test_cmp_bin d1/d2/f_02.text CRLF.DATA &&
+
+	git checkout base &&
+	git -c core.parallelcheckout=1 checkout verify_nested_attr &&
+
+	test_cmp_bin d1/d2/f_01.text CRLF.DATA &&
+	test_cmp_bin d1/d2/f_02.text CRLF.DATA
 '
 
 test_done
