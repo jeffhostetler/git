@@ -672,13 +672,13 @@ void setup_parallel_checkout(struct checkout *state,
 			     struct unpack_trees_options *o)
 {
 	struct parallel_checkout *pc = NULL;
-	int nr_files = 0;
+	int nr_updated_files = 0;
+	int nr_eligible_files = 0;
+	int enabled;
 	int k;
 
 	if (!core_parallel_checkout)
 		return;
-
-	trace2_region_enter("pcheckout", "setup", NULL);
 
 	/*
 	 * Disallow parallel-checkout if this obscure flag is turned on
@@ -686,14 +686,16 @@ void setup_parallel_checkout(struct checkout *state,
 	 * current state of the working directory.
 	 */
 	if (state->not_new)
-		goto done;
+		return;
 
 	/*
 	 * Disallow parallel-checkout if we're not actually going to
 	 * populate the worktree.
 	 */
 	if (!o->update || o->dry_run)
-		goto done;
+		return;
+
+	trace2_region_enter("pcheckout", "setup", NULL);
 
 	/*
 	 * First-order approximation of the total amount of work required.
@@ -709,9 +711,9 @@ void setup_parallel_checkout(struct checkout *state,
 			continue;
 		if ((ce->ce_mode & S_IFMT) != S_IFREG)
 			continue;
-		nr_files++;
+		nr_updated_files++;
 	}
-	if (nr_files <= core_parallel_checkout_threshold)
+	if (nr_updated_files <= core_parallel_checkout_threshold)
 		goto done;
 
 	pc = xcalloc(1, sizeof(*state->parallel_checkout));
@@ -763,6 +765,8 @@ void setup_parallel_checkout(struct checkout *state,
 		if (!is_eligible_for_parallel_checkout(&ca))
 			continue;
 
+		nr_eligible_files++;
+
 		item = xcalloc(1, sizeof(*item));
 
 		item->ce = ce;
@@ -788,6 +792,7 @@ void setup_parallel_checkout(struct checkout *state,
 //			      k, item->pc_item_nr, ce->name);
 	}
 	trace2_region_leave("pcheckout", "build_items", NULL);
+	assert(pc->nr == nr_eligible_files);
 	if (pc->nr <= core_parallel_checkout_threshold) {
 		free_parallel_checkout(pc);
 		goto done;
@@ -805,25 +810,31 @@ void setup_parallel_checkout(struct checkout *state,
 		goto done;
 	}
 
-	trace2_data_intmax("pcheckout", NULL, "ce.nr", state->istate->cache_nr);
-	trace2_data_intmax("pcheckout", NULL, "ce.update", nr_files);
-	trace2_data_intmax("pcheckout", NULL, "ce.eligible", pc->nr);
-
-	trace2_data_intmax("pcheckout", NULL, "helper.processes",
-			   nr_helpers_wanted);
-	trace2_data_intmax("pcheckout", NULL, "helper.writer_threads",
-			   nr_writers_per_helper_wanted);
-	trace2_data_intmax("pcheckout", NULL, "helper.preload_count",
-			   nr_preload_per_helper_wanted);
-
 	/*
 	 * Actually enable parallel checkout.
 	 */
 	state->parallel_checkout = pc;
+	enabled = 1;
 
 done:
-	trace2_data_intmax("pcheckout", NULL, "helper.enabled",
-			   !!state->parallel_checkout);
+	trace2_data_intmax("pcheckout", NULL, "ce/nr_total",
+			   state->istate->cache_nr);
+	trace2_data_intmax("pcheckout", NULL, "ce/nr_updated",
+			   nr_updated_files);
+	trace2_data_intmax("pcheckout", NULL, "ce/nr_eligible",
+			   nr_eligible_files);
+	trace2_data_intmax("pcheckout", NULL, "core/threshold",
+			   core_parallel_checkout_threshold);
+
+	trace2_data_intmax("pcheckout", NULL, "helper/enabled", enabled);
+	if (enabled) {
+		trace2_data_intmax("pcheckout", NULL, "helper/processes",
+				   nr_helpers_wanted);
+		trace2_data_intmax("pcheckout", NULL, "helper/writer_threads",
+				   nr_writers_per_helper_wanted);
+		trace2_data_intmax("pcheckout", NULL, "helper/preload_count",
+				   nr_preload_per_helper_wanted);
+	}
 
 	trace2_region_leave("pcheckout", "setup", NULL);
 }
