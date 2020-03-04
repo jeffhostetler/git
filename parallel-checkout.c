@@ -511,6 +511,7 @@ static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
 	return 0;
 }
 
+#if 0 // temporarily hide this while we focus on classic-with-helper mode
 /*
  * blocking mget results for [0, end) from this child.
  */
@@ -594,6 +595,7 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
 
 	return 0;
 }
+#endif
 
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
@@ -729,7 +731,6 @@ void setup_parallel_checkout(struct checkout *state,
 	int enabled;
 	int err;
 	int k;
-	int nr_cpus;
 
 	if (!core_parallel_checkout)
 		return;
@@ -770,7 +771,6 @@ void setup_parallel_checkout(struct checkout *state,
 	 * TODO or delta-chain or unzipping, we may not actually need that
 	 * TODO many processes.
 	 */
-	nr_cpus = online_cpus();
 	if (core_parallel_checkout_helpers > 0)
 		nr_helper_processes_wanted = core_parallel_checkout_helpers;
 	else
