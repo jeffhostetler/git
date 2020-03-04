@@ -158,6 +158,54 @@ static void free_parallel_checkout(struct parallel_checkout *pc)
 }
 
 ///////////////////////////////////////////////////////////////////
+
+/*
+ * Print an error message describing why the helper associated with
+ * this item could not create the file.  This lets the foreground
+ * process control the ordering of messages to better match the
+ * order from the classic (sequential) version.
+ */
+static int helper_error(struct parallel_checkout_item *item)
+{
+	switch (item->item_result.item_error_class) {
+	case IEC__OK:
+		return IEC__OK;
+
+	case IEC__INVALID_ITEM:
+		/*
+		 * We asked helper[k] for an item that we did not send it.
+		 */
+		error("Invalid item for helper[%d] '%s'",
+		      item->helper_nr, item->ce->name);
+		return 1;
+
+	case IEC__LOAD:
+		error("error loading blob for '%s': %s",
+		      item->ce->name, strerror(item->item_result.item_errno));
+		return 1;
+
+	case IEC__OPEN:
+		error("error creating file '%s': %s",
+		      item->ce->name, strerror(item->item_result.item_errno));
+		return 1;
+
+	case IEC__WRITE:
+		error("error writing to file '%s': %s",
+		      item->ce->name, strerror(item->item_result.item_errno));
+		return 1;
+
+	case IEC__LSTAT:
+		error("error stating file '%s': %s",
+		      item->ce->name, strerror(item->item_result.item_errno));
+		return 1;
+
+	default:
+		error("Invalid IEC for file '%s': %d",
+		      item->ce->name, item->item_result.item_error_class);
+		return 1;
+	}
+}
+
 ///////////////////////////////////////////////////////////////////
 
 #define CAP_QUEUE       (1u<<1)
@@ -588,9 +636,6 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 
 	trace2_region_enter("pcheckout", "send_items", NULL);
 
-	// TODO decide if these sigchain calls are actually needed.
-	sigchain_push(SIGPIPE, SIG_IGN);
-
 	/*
 	 * Begin a queue command with each helper in parallel.
 	 */
@@ -628,8 +673,6 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 	}
 
 done:
-	sigchain_pop(SIGPIPE);
-
 	trace2_region_leave("pcheckout", "send_items", NULL);
 
 	return err;
@@ -675,6 +718,7 @@ void setup_parallel_checkout(struct checkout *state,
 	int nr_updated_files = 0;
 	int nr_eligible_files = 0;
 	int enabled;
+	int err;
 	int k;
 
 	if (!core_parallel_checkout)
@@ -804,7 +848,11 @@ void setup_parallel_checkout(struct checkout *state,
 		goto done;
 	}
 
-	if (send_items_to_helpers(pc)) {
+	sigchain_push(SIGPIPE, SIG_IGN);
+	err = send_items_to_helpers(pc);
+	sigchain_pop(SIGPIPE);
+
+	if (err) {
 		free_parallel_checkout(pc);
 		stop_all_helpers();
 		goto done;
@@ -855,13 +903,24 @@ void finish_parallel_checkout(struct checkout *state)
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
 
+/*
+ * Apply response from the helper (and lstat data) to the cache-entry.
+ *
+ * This should match the code at the bottom of entry.c:write_entry()
+ * at the "finish:" label.
+ */
 static int update_cache_entry_for_item(const struct checkout *state,
-					struct parallel_checkout_item *item)
+				       struct parallel_checkout_item *item)
 {
 	assert(state->istate);
 	assert(state->refresh_cache);
 
-	// TODO if item->item_result.item_error_class != _OK ...
+	if (item->item_result.item_error_class != IEC__OK) {
+		helper_error(item);
+		return 1;
+	}
+
+	// TODO flush_fscache() ??
 
 	fill_stat_cache_info(state->istate, item->ce,
 			     &item->item_result.st);
@@ -869,6 +928,15 @@ static int update_cache_entry_for_item(const struct checkout *state,
 	mark_fsmonitor_invalid(state->istate, item->ce);
 	state->istate->cache_changed |= CE_ENTRY_CHANGED;
 
+	return 0;
+}
+
+static int write_entry_1(struct parallel_checkout_item *item)
+{
+	if (send_cmd__async_write_item(item))
+		return 1;
+	if (send_cmd__sync_get1_item(item))
+		return 1;
 	return 0;
 }
 
@@ -899,23 +967,35 @@ int parallel_checkout__write_entry(const struct checkout *state,
 				   struct cache_entry *ce)
 {
 	struct parallel_checkout_item *item = ce->parallel_checkout_item;
+	int err = 0;
 
 	assert(item->ce == ce);
 
-	// TODO does this need sigchain()...
+	sigchain_push(SIGPIPE, SIG_IGN);
+	err = write_entry_1(item);
+	sigchain_pop(SIGPIPE);
 
-	if (send_cmd__async_write_item(item))
-		goto failed;
-	if (send_cmd__sync_get1_item(item))
-		goto failed;
+	if (err) {
+		/*
+		 * We have a pkt-line error trying to talk to the helper
+		 * process.  This is probably fatal (at least WRT to this
+		 * helper instance).
+		 *
+		 * The original check_update_loop() just sets an error flag
+		 * and keeps going when it gets a file IO error.
+		 *
+		 * So for now, just emit an error() for it and continue
+		 * rather than shutting down.
+		 */
+		error("TODO could not get result from helper....");
+		return err;
+	}
+
+	// TODO can we just assert(state->refresh_cache) ?
 
 	if (state->refresh_cache)
 		return update_cache_entry_for_item(state, item);
 	return 0;
-
-failed:
-	/* TODO handle client/helper write failures */
-	return 1;
 }
 
 int parallel_checkout__set_auto_write(const struct checkout *state)
@@ -925,9 +1005,11 @@ int parallel_checkout__set_auto_write(const struct checkout *state)
 
 	trace2_region_enter("pcheckout", "set_auto_write", NULL);
 
+	sigchain_push(SIGPIPE, SIG_IGN);
 	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++)
 		err |= send_cmd__async_write(helper_nr,
 					     CHECKOUT_HELPER__AUTO_ASYNC_WRITE);
+	sigchain_pop(SIGPIPE);
 
 	trace2_region_leave("pcheckout", "set_auto_write", NULL);
 
@@ -948,9 +1030,11 @@ int parallel_checkout__collect_results(const struct checkout *state)
 
 	trace2_region_enter("pcheckout", "collect_results", NULL);
 
+	sigchain_push(SIGPIPE, SIG_IGN);
 	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++) {
 		err |= send_cmd__sync_mget_items(pc, helper_nr);
 	}
+	sigchain_pop(SIGPIPE);
 
 	if (state->refresh_cache) {
 		for (pc_item_nr = 0;
