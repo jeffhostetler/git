@@ -637,3 +637,8 @@ core.parallelCheckoutThreshold::
 	and process overhead.  When enabled, parallel checkout will not
 	be attempted when the number of files to be updated is less than
 	the threshold.	Defaults to 1,000 when unset or set to 0.
+
+core.parallelCheckoutHelpers::
+	The number of background `checkout--helper` processes to create.
+	Defaults to a reasonable number based upon the number of CPUs
+	when unset or set to 0.
