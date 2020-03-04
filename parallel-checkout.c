@@ -688,9 +688,18 @@ static int launch_all_helpers(struct parallel_checkout *pc)
 	// TODO Maybe be config settings and maybe depends upon the
 	// TODO command (clone vs switch-branch).
 	// TODO
-	nr_helper_processes_wanted = 6;
-	nr_writer_threads_per_helper_process_wanted = online_cpus() / 4;
-	preload_queue_size = (nr_writer_threads_per_helper_process_wanted * 2) + 10;
+
+	// TODO in classic-with-helper mode we only sync write files, so
+	// TODO we only need 1 writer thread.
+	nr_writer_threads_per_helper_process_wanted = 1;
+
+	// TODO in classic-with-helper mode we only need to keep enough blobs
+	// TODO preloaded to stay ahead of the check_update_loop().  Or rather,
+	// TODO after helper[k] writes a blob to the worktree, the other n-1
+	// TODO helpers will be asked to do the same, so helper[k] needs the
+	// TODO next blob to be ready before the _loop gets back to it to write
+	// TODO the next one.  We can round up because we have lots of memory.
+	preload_queue_size = 10;
 	
 	trace2_region_enter("pcheckout", "launch_helpers", NULL);
 
@@ -720,6 +729,7 @@ void setup_parallel_checkout(struct checkout *state,
 	int enabled;
 	int err;
 	int k;
+	int nr_cpus;
 
 	if (!core_parallel_checkout)
 		return;
@@ -737,6 +747,35 @@ void setup_parallel_checkout(struct checkout *state,
 	 * populate the worktree.
 	 */
 	if (!o->update || o->dry_run)
+		return;
+
+	/*
+	 * See if we have enough CPUs to be effective and choose how many
+	 * background checkout--helper processes we should start.
+	 *
+	 * If the user set a config value, we try to respect it.
+	 *
+	 * When unspecified, we start with the number of CPUs and adapt
+	 * because each helper will have at least 3 threads (main, preload,
+	 * and (upto n) writers).  And round down because of the (current)
+	 * foreground process.
+	 *
+	 * TODO Is there an over-commit limit here that we should enforce?
+	 * TODO That is, if the user asks for 100 helpers and we only have
+	 * TODO 4 cores, should we do it??  Alternatively, if we're on a
+	 * TODO 128 core beast machine, do we really want to say no?
+	 * TODO
+	 * TODO Since in classic-with-helper mode the primary goal is to
+	 * TODO preload blobs from the ODB without locking on ODB access
+	 * TODO or delta-chain or unzipping, we may not actually need that
+	 * TODO many processes.
+	 */
+	nr_cpus = online_cpus();
+	if (core_parallel_checkout_helpers > 0)
+		nr_helper_processes_wanted = core_parallel_checkout_helpers;
+	else
+		nr_helper_processes_wanted = online_cpus() / 3;
+	if (nr_helper_processes_wanted < 1)
 		return;
 
 	trace2_region_enter("pcheckout", "setup", NULL);
