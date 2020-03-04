@@ -975,6 +975,8 @@ extern int core_parallel_checkout;
 
 extern int core_parallel_checkout_threshold;
 
+extern int core_parallel_checkout_helpers;
+
 /*
  * Include broken refs in all ref iterations, which will
  * generally choke dangerous operations rather than letting
