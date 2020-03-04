@@ -71,9 +71,9 @@ int is_eligible_for_parallel_checkout(const struct conv_attrs *ca)
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
 
-static int nr_helpers_wanted = 1;
-static int nr_writers_per_helper_wanted = 1;
-static int nr_preload_per_helper_wanted = 5;
+static int nr_helper_processes_wanted = 1;
+static int nr_writer_threads_per_helper_process_wanted = 1;
+static int preload_queue_size = 5;
 
 static int helper_pool_initialized;
 
@@ -254,8 +254,8 @@ static struct helper_process *helper_find_or_start_process(
 //	argv_array_push(&argv, "/home/jeffhost/work/gfw/git-checkout--helper");
 	argv_array_push(&argv, "checkout--helper");
 	argv_array_pushf(&argv, "--child=%d", helper_nr);
-	argv_array_pushf(&argv, "--writers=%d", nr_writers_per_helper_wanted);
-	argv_array_pushf(&argv, "--preload=%d", nr_preload_per_helper_wanted);
+	argv_array_pushf(&argv, "--writers=%d", nr_writer_threads_per_helper_process_wanted);
+	argv_array_pushf(&argv, "--preload=%d", preload_queue_size);
 
 	sq_quote_argv_pretty(&quoted, argv.argv);
 
@@ -688,15 +688,15 @@ static int launch_all_helpers(struct parallel_checkout *pc)
 	// TODO Maybe be config settings and maybe depends upon the
 	// TODO command (clone vs switch-branch).
 	// TODO
-	nr_helpers_wanted = 6;
-	nr_writers_per_helper_wanted = online_cpus() / 4;
-	nr_preload_per_helper_wanted = (nr_writers_per_helper_wanted * 2) + 10;
+	nr_helper_processes_wanted = 6;
+	nr_writer_threads_per_helper_process_wanted = online_cpus() / 4;
+	preload_queue_size = (nr_writer_threads_per_helper_process_wanted * 2) + 10;
 	
 	trace2_region_enter("pcheckout", "launch_helpers", NULL);
 
-	ALLOC_GROW(helper_pool.array, nr_helpers_wanted, helper_pool.alloc);
+	ALLOC_GROW(helper_pool.array, nr_helper_processes_wanted, helper_pool.alloc);
 
-	while (helper_pool.nr < nr_helpers_wanted) {
+	while (helper_pool.nr < nr_helper_processes_wanted) {
 		hp = helper_find_or_start_process(CAP_EVERYTHING, helper_pool.nr);
 		if (!hp) {
 			err = 1;
@@ -877,11 +877,11 @@ done:
 	trace2_data_intmax("pcheckout", NULL, "helper/enabled", enabled);
 	if (enabled) {
 		trace2_data_intmax("pcheckout", NULL, "helper/processes",
-				   nr_helpers_wanted);
+				   nr_helper_processes_wanted);
 		trace2_data_intmax("pcheckout", NULL, "helper/writer_threads",
-				   nr_writers_per_helper_wanted);
+				   nr_writer_threads_per_helper_process_wanted);
 		trace2_data_intmax("pcheckout", NULL, "helper/preload_count",
-				   nr_preload_per_helper_wanted);
+				   preload_queue_size);
 	}
 
 	trace2_region_leave("pcheckout", "setup", NULL);
