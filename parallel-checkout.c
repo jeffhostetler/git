@@ -998,6 +998,7 @@ int parallel_checkout__write_entry(const struct checkout *state,
 	return 0;
 }
 
+#if 0 // temporarily hide this while we work on classic_with_helper mode
 int parallel_checkout__set_auto_write(const struct checkout *state)
 {
 	int helper_nr;
@@ -1053,3 +1054,4 @@ int parallel_checkout__collect_results(const struct checkout *state)
 	return err;
 }
 
+#endif // temporary
