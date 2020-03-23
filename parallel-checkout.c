@@ -728,7 +728,7 @@ void setup_parallel_checkout(struct checkout *state,
 	struct parallel_checkout *pc = NULL;
 	int nr_updated_files = 0;
 	int nr_eligible_files = 0;
-	int enabled;
+	int enabled = 0;
 	int err;
 	int k;
 
