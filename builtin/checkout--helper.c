@@ -61,28 +61,29 @@ static struct item_vec item_vec;
 static struct item_range preload_range;
 
 /*
- * A count of the number of completed items.  This will
- * equal item_vec.nr once all items have been written.
- * But because we allow multiple writer threads (which
- * will start the writes in order, but may finish in
- * different order), we cannot just say that it represents
- * a contiguous range of completed items.
+ * A count of the number of completed items.  This will equal
+ * item_vec.nr once all items have been written.
+ *
+ * This is updated as each writer thread finishes writing an item,
+ * so it will eventually reach item_vec.nr, but may differ temporarily
+ * when threads finish writing items out of order.
  */
-static int done_range__count;
+static int completed_count;
 
 /*
- * Likewise, because we always async-write the items in order, we
- * require the client to request them to be written in order.  (Even
- * if we allow multiple writer threads, we start them in order.)
- * Therefore, we just need [0..end) and don't need the extra count
- * field.
+ * We always start writing the items in the order queued and expect
+ * the client to request them in that order.  Even when we have multiple
+ * writers, the items are pulled from the queue in that order.
+ *
+ * Therefore, we only keep track of the number of items authorized for
+ * writing and assume that everything in [0, count) is authorized.
  *
  * We allow `end == maxint` (or any value larger than the number of
  * queued items) to mean fully automatic async write.
  *
- * See CHECKOUT_HELPER__AUTO_ASYNC_WRITE.
+ * See CHECKOUT_HELPER__AUTO_WRITE.
  */
-static int async_write_range__end;
+static int authorized_end;
 
 static pthread_mutex_t main_mutex;
 static pthread_t preload_thread;
@@ -108,6 +109,7 @@ static int in_shutdown;
  * function of the number of writer threads.
  */
 #define DEFAULT_PRELOAD_RANGE_LIMIT 5
+
 static int preload_range_limit = DEFAULT_PRELOAD_RANGE_LIMIT;
 
 /*
@@ -120,6 +122,7 @@ static int preload_range_limit = DEFAULT_PRELOAD_RANGE_LIMIT;
  * careful and populate files sequentially.
  */
 #define DEFAULT_WRITER_THREAD_POOL_SIZE 1
+
 static int writer_thread_pool_size = DEFAULT_WRITER_THREAD_POOL_SIZE;
 
 static struct item *alloc_item(int pc_item_nr, int helper_item_nr, int mode,
@@ -178,11 +181,11 @@ static void item_vec_append(struct item *item)
 
 	/*
 	 * As a sanity check, we require the client send us an
-	 * helper_item_nr for each item.  This value will later be used
-	 * by the client to receive status for the item.  To avoid
-	 * building yet another fancy/expensive lookup table, we
-	 * require this to be a simple integer matching the item's
-	 * row number in our vector.
+	 * helper_item_nr for each item.  This value will later be
+	 * used by the client to receive status for the item.  To
+	 * avoid building yet another fancy/expensive lookup table, we
+	 * require this to be a simple integer matching the item's row
+	 * number in our vector.
 	 */
 	if (item->helper_item_nr != item_vec.nr)
 		BUG("invalid helper_item_nr (%d (exp %d)) for '%s'",
@@ -193,9 +196,12 @@ static void item_vec_append(struct item *item)
 
 	item->item_state = ITEM_STATE__QUEUED;
 
-	// TODO optimize when we signal preload thread.
-	// TODO that is, only signal if the preload thread is stalled.
-	pthread_cond_signal(&preload_cond);
+	/*
+	 * We have a new item in the item queue, but only bother to wake
+	 * the preload thread if it hasn't filled its quota yet.
+	 */
+	if (preload_range.count < preload_range_limit)
+	    pthread_cond_signal(&preload_cond);
 
 	pthread_mutex_unlock(&main_mutex);
 }
@@ -227,21 +233,21 @@ static void set_async_write_on_items(int end)
 	 * than signaling a single writer thread) when we increase it
 	 * by more than 1 item.
 	 */
-	if (async_write_range__end == CHECKOUT_HELPER__AUTO_ASYNC_WRITE)
+	if (authorized_end == CHECKOUT_HELPER__AUTO_WRITE)
 		;
 
-	else if (end == CHECKOUT_HELPER__AUTO_ASYNC_WRITE) {
-		async_write_range__end = CHECKOUT_HELPER__AUTO_ASYNC_WRITE;
+	else if (end == CHECKOUT_HELPER__AUTO_WRITE) {
+		authorized_end = CHECKOUT_HELPER__AUTO_WRITE;
 		pthread_cond_broadcast(&writer_cond);
 	}
 
-	else if (end > async_write_range__end + 1) {
-		async_write_range__end = end;
+	else if (end > authorized_end + 1) {
+		authorized_end = end;
 		pthread_cond_broadcast(&writer_cond);
 	}
 
-	else if (end == async_write_range__end + 1) {
-		async_write_range__end = end;
+	else if (end == authorized_end + 1) {
+		authorized_end = end;
 		pthread_cond_signal(&writer_cond);
 	}
 
@@ -560,8 +566,8 @@ static void *writer_thread_proc(void *_data)
 
 		/* Get the first preloaded item (ready for writing). */
 		helper_item_nr = preload_range.end - preload_range.count;
-		if (async_write_range__end != CHECKOUT_HELPER__AUTO_ASYNC_WRITE &&
-		    helper_item_nr >= async_write_range__end) {
+		if (authorized_end != CHECKOUT_HELPER__AUTO_WRITE &&
+		    helper_item_nr >= authorized_end) {
 			/*
 			 * If the client hasn't asked us to
 			 * async-write this item yet, we must wait for
@@ -607,7 +613,7 @@ static void *writer_thread_proc(void *_data)
 
 		item->item_state = ITEM_STATE__DONE;
 
-		done_range__count++;
+		completed_count++;
 
 		/*
 		 * Signal the main thread than we have results for an item.
@@ -785,6 +791,10 @@ static void send_1_item(const struct item *item, int helper_item_nr)
  * We respond:
  *     <result_k>
  *     <flush>
+ *
+ * Note that because we always write all items in queued order,
+ * this effectively is a wait for all items upto and including
+ * the requested one to be written.
  */
 static int helper_cmd__sync_get1_item(const char *start_line)
 {
@@ -979,15 +989,13 @@ static int server_loop(void)
 	int len;
 	int k;
 
-top_of_loop:
+get_next_command:
 	len = packet_read_line_gently(0, NULL, &line);
 	if (len < 0 || !line)
 		return 0;
 
-	// TODO consider changing these error() calls to BUG()
-
 	if (!skip_prefix(line, "command=", &cmd)) {
-		error("invalid command start line '%s'", line);
+		error("%s: invalid sequence '%s'", t2_category_name, line);
 		return 1;
 	}
 
@@ -998,14 +1006,14 @@ top_of_loop:
 				 * The client sent a command that it didn't
 				 * claim that it understood.
 				 */
-				error("%s: invalid command '%s'",
-				      t2_category_name, line);
+				error("%s: invalid command '%s'", t2_category_name, line);
 				return 1;
 			}
 
 			if ((caps[k].pfn_helper_cmd)(line))
 				return 1;
-			goto top_of_loop;
+
+			goto get_next_command;
 		}
 	}
 
@@ -1127,7 +1135,7 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 		int k_limit = ARRAY_SIZE(hex_oid);
 
 #if 1
-		set_async_write_on_items(CHECKOUT_HELPER__AUTO_ASYNC_WRITE);
+		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
 #endif
 
 		for (k = 0; k < k_limit; k++) {
@@ -1153,13 +1161,13 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 			set_async_write_on_items(k);
 		}
 //#else
-		set_async_write_on_items(CHECKOUT_HELPER__AUTO_ASYNC_WRITE);
+		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
 #endif
 
 		// TODO write a real wait loop for foreground thread
 		// to listen for done items.
 		pthread_mutex_lock(&main_mutex);
-		while (done_range__count < item_vec.nr)
+		while (completed_count < item_vec.nr)
 			pthread_cond_wait(&done_cond, &main_mutex);
 		in_shutdown = 1;
 		pthread_cond_signal(&preload_cond);

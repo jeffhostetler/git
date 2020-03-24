@@ -20,10 +20,11 @@ struct checkout_helper__queue_item_record {
 };
 
 /*
- * Allow writer thread(s) to automatically async-write files into the
- * worktree as soon as they are loaded by the preload thread.
+ * Allow writer thread(s) in checkout--helper to automatically
+ * write files into the worktree as soon as the necessary blobs
+ * are loaded into memory by the preload thread.
  */
-#define CHECKOUT_HELPER__AUTO_ASYNC_WRITE maximum_signed_value_of_type(int)
+#define CHECKOUT_HELPER__AUTO_WRITE maximum_signed_value_of_type(int)
 
 /*
  * The individual operation that failed within a `checkout--helper`
