@@ -8,6 +8,11 @@
 #include "object-store.h"
 #include "checkout--helper.h"
 
+/*
+ * This is used as a label prefix in all error messages
+ * and in any trace2 messages to identify this child
+ * process.
+ */
 static char t2_category_name[100];
 static int child_nr = -1;
 
@@ -76,7 +81,7 @@ static int completed_count;
  * writers, the items are pulled from the queue in that order.
  *
  * Therefore, we only keep track of the number of items authorized for
- * writing and assume that everything in [0, count) is authorized.
+ * writing and assume that everything in [0, end) is authorized.
  *
  * We allow `end == maxint` (or any value larger than the number of
  * queued items) to mean fully automatic async write.
@@ -1046,6 +1051,7 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 {
 	int err = 0;
 	int w;
+	int b_automatic = 0;
 
 	struct option checkout_helper_options[] = {
 		OPT_INTEGER(0, "child", &child_nr, N_("child number")),
@@ -1053,6 +1059,8 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 			    N_("preload limit")),
 		OPT_INTEGER('w', "writers", &writer_thread_pool_size,
 			    N_("number of concurrent writers")),
+		OPT_BOOL('a', "automatic", &b_automatic,
+			 N_("automatically write files")),
 		OPT_END()
 	};
 
@@ -1068,6 +1076,8 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 		preload_range_limit = DEFAULT_PRELOAD_RANGE_LIMIT;
 	if (writer_thread_pool_size < 1)
 		writer_thread_pool_size = DEFAULT_WRITER_THREAD_POOL_SIZE;
+	if (b_automatic)
+		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
 
 	writer_thread_pool = xcalloc(writer_thread_pool_size, sizeof(pthread_t));
 

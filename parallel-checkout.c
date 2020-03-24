@@ -257,6 +257,8 @@ static struct helper_process *helper_find_or_start_process(
 	argv_array_pushf(&argv, "--writers=%d", nr_writer_threads_per_helper_process_wanted);
 	argv_array_pushf(&argv, "--preload=%d", preload_queue_size);
 
+	// TODO add -a when in clone or sparse add ?
+
 	sq_quote_argv_pretty(&quoted, argv.argv);
 
 	if (!helper_pool_initialized) {
