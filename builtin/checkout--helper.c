@@ -1031,7 +1031,6 @@ static const char * const checkout_helper_usage[] = {
 int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 {
 	int err = 0;
-	int test = 0;
 	int w;
 
 	struct option checkout_helper_options[] = {
@@ -1040,7 +1039,6 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 			    N_("preload limit")),
 		OPT_INTEGER('w', "writers", &writer_thread_pool_size,
 			    N_("number of concurrent writers")),
-		OPT_INTEGER('t', "test", &test, N_("test mode")),
 		OPT_END()
 	};
 
@@ -1063,7 +1061,6 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 		 "helper[%02d]", child_nr);
 	packet_trace_identity(t2_category_name);
 
-	if (!test)
 	if (do_protocol_handshake())
 		return 1;
 
@@ -1076,138 +1073,17 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 		pthread_create(&writer_thread_pool[w], NULL,
 			       writer_thread_proc, NULL);
 
-	if (test) {
-		int k;
-		const char *hex_oid[] = {
-#if 0 // azure dev ops repo
-			"141869db80077b8c5a2992c877f40058515f66f2",
-			"ffc61ac9f84f65a4166e9fb7a631385da1280199",
-			"c380a78a57e1d5551dde2725b7384772e730249a",
-			"dade0a232e4c0dd9383cedbbe4f3600c67c1a2bb",
-			"8a82b1107cb158754fac37812475719210ae709d",
-#else // my config repo
-			"eacdd9933d70b6c53f44b2f24533c38c7d562bd1",
-			"35e6e892b1af97d03f976b4a112e5d7697a46b54",
-			"cbcd774042bcd876aea9a4a7fcd17e0830fb25f7",
-			"efc525d135bf48d217004ebf70136e27ffd243c7",
-			"e16fa82051d3879ec5845485076cb6aef323ab68",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"2c76c928b16e50d610cf9bb23e3a4bcf31000fe0",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"7ef5800c2a66ba12f5da86f7fdff542c926606f5",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"eacdd9933d70b6c53f44b2f24533c38c7d562bd1",
-			"35e6e892b1af97d03f976b4a112e5d7697a46b54",
-			"cbcd774042bcd876aea9a4a7fcd17e0830fb25f7",
-			"efc525d135bf48d217004ebf70136e27ffd243c7",
-			"e16fa82051d3879ec5845485076cb6aef323ab68",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"2c76c928b16e50d610cf9bb23e3a4bcf31000fe0",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"7ef5800c2a66ba12f5da86f7fdff542c926606f5",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"eacdd9933d70b6c53f44b2f24533c38c7d562bd1",
-			"35e6e892b1af97d03f976b4a112e5d7697a46b54",
-			"cbcd774042bcd876aea9a4a7fcd17e0830fb25f7",
-			"efc525d135bf48d217004ebf70136e27ffd243c7",
-			"e16fa82051d3879ec5845485076cb6aef323ab68",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"2c76c928b16e50d610cf9bb23e3a4bcf31000fe0",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"7ef5800c2a66ba12f5da86f7fdff542c926606f5",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"eacdd9933d70b6c53f44b2f24533c38c7d562bd1",
-			"35e6e892b1af97d03f976b4a112e5d7697a46b54",
-			"cbcd774042bcd876aea9a4a7fcd17e0830fb25f7",
-			"efc525d135bf48d217004ebf70136e27ffd243c7",
-			"e16fa82051d3879ec5845485076cb6aef323ab68",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"2c76c928b16e50d610cf9bb23e3a4bcf31000fe0",
-			"ecb053f2dcb6beaf44f01dfca12da37c77b51593",
-			"7ef5800c2a66ba12f5da86f7fdff542c926606f5",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-			"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-#endif
-		};
-		int k_limit = ARRAY_SIZE(hex_oid);
+	err = server_loop();
 
-#if 1
-		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
-#endif
+	pthread_mutex_lock(&main_mutex);
+	in_shutdown = 1;
+	pthread_cond_signal(&preload_cond);
+	pthread_cond_broadcast(&writer_cond);
+	pthread_mutex_unlock(&main_mutex);
 
-		for (k = 0; k < k_limit; k++) {
-			struct object_id oid;
-			struct item *item;
-			struct strbuf buf = STRBUF_INIT;
-
-			strbuf_setlen(&buf, 0);
-			strbuf_addf(&buf, "test_path_%d/file_%d", k / 10, k);
-
-			get_oid_hex(hex_oid[k], &oid);
-			item = alloc_item(k * 10, k, 0666,
-					  0, 0, 0,
-					  &oid,
-					  NULL, xstrdup(buf.buf));
-			item_vec_append(item);
-
-			strbuf_release(&buf);
-		}
-
-#if 0
-		for (k = 0; k < k_limit; k++) {
-			set_async_write_on_items(k);
-		}
-//#else
-		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
-#endif
-
-		// TODO write a real wait loop for foreground thread
-		// to listen for done items.
-		pthread_mutex_lock(&main_mutex);
-		while (completed_count < item_vec.nr)
-			pthread_cond_wait(&done_cond, &main_mutex);
-		in_shutdown = 1;
-		pthread_cond_signal(&preload_cond);
-		pthread_cond_broadcast(&writer_cond);
-		pthread_mutex_unlock(&main_mutex);
-
-		pthread_join(preload_thread, NULL);
-		for (w = 0; w < writer_thread_pool_size; w++)
-			pthread_join(writer_thread_pool[w], NULL);
-
-		// TODO now that threads are gone, we can directly
-		// access the item_vec without the mutex.
-		for (k = 0; k < k_limit; k++) {
-			struct item *item = item_vec.array[k];
-
-			trace2_printf("%s:[item %d] test [%d %d %d] [sz %d] [mt %d]",
-				      t2_category_name, item->helper_item_nr,
-				      item->item_state,
-				      item->item_error_class,
-				      item->item_errno,
-				      item->st.st_size,
-				      item->st.st_mtime);
-
-			if (item->item_error_class != IEC__OK)
-				err = 1;
-		}
-	}
-	else {
-		err = server_loop();
-
-		pthread_mutex_lock(&main_mutex);
-		in_shutdown = 1;
-		pthread_cond_signal(&preload_cond);
-		pthread_cond_broadcast(&writer_cond);
-		pthread_mutex_unlock(&main_mutex);
-
-		pthread_join(preload_thread, NULL);
-		for (w = 0; w < writer_thread_pool_size; w++)
-			pthread_join(writer_thread_pool[w], NULL);
-	}
+	pthread_join(preload_thread, NULL);
+	for (w = 0; w < writer_thread_pool_size; w++)
+	    pthread_join(writer_thread_pool[w], NULL);
 
 	pthread_cond_destroy(&preload_cond);
 	pthread_cond_destroy(&writer_cond);
