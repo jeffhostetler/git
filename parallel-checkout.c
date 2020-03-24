@@ -113,7 +113,7 @@ struct parallel_checkout_item {
 	/*
 	 * The number of the child helper process that we queued this item to.
 	 */
-	int helper_nr;
+	int child_nr;
 	/*
 	 * The item number that the child process knows it as.  This is a
 	 * contiguous series WRT that child.
@@ -176,7 +176,7 @@ static int helper_error(struct parallel_checkout_item *item)
 		 * We asked helper[k] for an item that we did not send it.
 		 */
 		error("Invalid item for helper[%d] '%s'",
-		      item->helper_nr, item->ce->name);
+		      item->child_nr, item->ce->name);
 		return 1;
 
 	case IEC__LOAD:
@@ -238,14 +238,14 @@ static int helper_start_fn(struct subprocess_entry *subprocess)
 }
 
 /*
- * Start a helper process.  The helper_nr is there to force the subprocess
+ * Start a helper process.  The child_nr is there to force the subprocess
  * mechanism to let us have more than one instance of the same executable
  * (and to help with tracing).
  *
  * The returned helper_process pointer belongs to the map.
  */
 static struct helper_process *helper_find_or_start_process(
-	unsigned int cap_needed, int helper_nr)
+	unsigned int cap_needed, int child_nr)
 {
 	struct helper_process *hp;
 	struct argv_array argv = ARGV_ARRAY_INIT;
@@ -253,7 +253,7 @@ static struct helper_process *helper_find_or_start_process(
 
 //	argv_array_push(&argv, "/home/jeffhost/work/gfw/git-checkout--helper");
 	argv_array_push(&argv, "checkout--helper");
-	argv_array_pushf(&argv, "--child=%d", helper_nr);
+	argv_array_pushf(&argv, "--child=%d", child_nr);
 	argv_array_pushf(&argv, "--writers=%d", nr_writer_threads_per_helper_process_wanted);
 	argv_array_pushf(&argv, "--preload=%d", preload_queue_size);
 
@@ -316,11 +316,11 @@ static void stop_all_helpers(void)
 ///////////////////////////////////////////////////////////////////
 
 static void send__queue_item_record(struct parallel_checkout *pc,
-				    int pc_item_nr, int helper_nr)
+				    int pc_item_nr, int child_nr)
 {
 	struct parallel_checkout_item *item = pc->items[pc_item_nr];
 	struct conv_attrs *ca = &item->ca;
-	struct helper_process *hp = helper_pool.array[helper_nr];
+	struct helper_process *hp = helper_pool.array[child_nr];
 	struct child_process *process = &hp->subprocess.process;
 	uint32_t len_name;
 	uint32_t len_encoding_name;
@@ -344,7 +344,7 @@ static void send__queue_item_record(struct parallel_checkout *pc,
 	/*
 	 * Update the item to remember with whom we queued it.
 	 */
-	item->helper_nr = helper_nr;
+	item->child_nr = child_nr;
 	item->helper_item_nr = hp->helper_item_count++;
 
 	/*
@@ -397,12 +397,12 @@ static void send__queue_item_record(struct parallel_checkout *pc,
 }
 
 /*
- * "async write" tells helper[helper_nr] that all items in [0, end) can
+ * "async write" tells helper[child_nr] that all items in [0, end) can
  * be written when ready.
  */
-static int send_cmd__async_write(int helper_nr, int end)
+static int send_cmd__async_write(int child_nr, int end)
 {
-	struct helper_process *hp = helper_pool.array[helper_nr];
+	struct helper_process *hp = helper_pool.array[child_nr];
 	struct child_process *process = &hp->subprocess.process;
 
 	/*
@@ -430,7 +430,7 @@ static int send_cmd__async_write(int helper_nr, int end)
  */
 static int send_cmd__async_write_item(struct parallel_checkout_item *item)
 {
-	return send_cmd__async_write(item->helper_nr,
+	return send_cmd__async_write(item->child_nr,
 				     item->helper_item_nr + 1);
 }
 
@@ -442,7 +442,7 @@ static void debug_dump_item(const struct parallel_checkout_item *item,
 		"%s: h[%d] req[%d,%d] res[%d,%d] e[%d,%d] st[%d,%d]",
 		label,
 
-		item->helper_nr,
+		item->child_nr,
 
 		item->pc_item_nr,
 		item->helper_item_nr,
@@ -461,7 +461,7 @@ static void debug_dump_item(const struct parallel_checkout_item *item,
 static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
 {
 	char buffer[LARGE_PACKET_MAX];
-	struct helper_process *hp = helper_pool.array[item->helper_nr];
+	struct helper_process *hp = helper_pool.array[item->child_nr];
 	struct child_process *process = &hp->subprocess.process;
 	char *line;
 	int len;
@@ -490,13 +490,13 @@ static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
 
 	if (item->item_result.helper_item_nr != item->helper_item_nr)
 		BUG("sync_get1: h[%d] wrong item req[%d,%d] rcv[%d,%d]",
-		    item->helper_nr,
+		    item->child_nr,
 		    item->pc_item_nr, item->helper_item_nr,
 		    item->item_result.pc_item_nr, item->item_result.helper_item_nr);
 	if (item->item_result.pc_item_nr != item->pc_item_nr ||
 	    item->item_result.item_error_class == IEC__INVALID_ITEM)
 		BUG("sync_get1: h[%d] unk item req[%d,%d] rcv[%d,%d]",
-		    item->helper_nr,
+		    item->child_nr,
 		    item->pc_item_nr, item->helper_item_nr,
 		    item->item_result.pc_item_nr, item->item_result.helper_item_nr);
 
@@ -516,10 +516,10 @@ static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
  * blocking mget results for [0, end) from this child.
  */
 static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
-				     int helper_nr)
+				     int child_nr)
 {
 	char buffer[LARGE_PACKET_MAX];
-	struct helper_process *hp = helper_pool.array[helper_nr];
+	struct helper_process *hp = helper_pool.array[child_nr];
 	struct child_process *process = &hp->subprocess.process;
 	struct parallel_checkout_item *item;
 	char *line;
@@ -550,7 +550,7 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
 
 		if (helper_item_nr >= hp->helper_item_count)
 			BUG("sync_mget: h[%d] too many rows (obs %d, exp %d)",
-			    helper_nr,
+			    child_nr,
 			    helper_item_nr, hp->helper_item_count);
 
 		if (len != sizeof(struct checkout_helper__item_result))
@@ -577,7 +577,7 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
 		 */
 		assert(item->pc_item_nr == temp->pc_item_nr);
 		assert(item->helper_item_nr == temp->helper_item_nr);
-		assert(item->helper_nr == helper_nr);
+		assert(item->child_nr == child_nr);
 
 		memcpy(&item->item_result, line,
 		       sizeof(struct checkout_helper__item_result));
@@ -632,7 +632,7 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
  */
 static int send_items_to_helpers(struct parallel_checkout *pc)
 {
-	int helper_nr;
+	int child_nr;
 	int pc_item_nr;
 	int err = 0;
 
@@ -641,8 +641,8 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 	/*
 	 * Begin a queue command with each helper in parallel.
 	 */
-	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++) {
-		struct helper_process *hp = helper_pool.array[helper_nr];
+	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
+		struct helper_process *hp = helper_pool.array[child_nr];
 		struct child_process *process = &hp->subprocess.process;
 
 		if (packet_write_fmt_gently(process->in, "command=queue\n")) {
@@ -656,16 +656,16 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 	 * the queue command that we've opened.
 	 */
 	for (pc_item_nr = 0; pc_item_nr < pc->nr; pc_item_nr++) {
-		int helper_nr = pc_item_nr % helper_pool.nr;
+		int child_nr = pc_item_nr % helper_pool.nr;
 
-		send__queue_item_record(pc, pc_item_nr, helper_nr);
+		send__queue_item_record(pc, pc_item_nr, child_nr);
 	}
 
 	/*
 	 * close the queue command with each helper.
 	 */
-	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++) {
-		struct helper_process *hp = helper_pool.array[helper_nr];
+	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
+		struct helper_process *hp = helper_pool.array[child_nr];
 		struct child_process *process = &hp->subprocess.process;
 
 		if (packet_flush_gently(process->in)) {
@@ -865,7 +865,7 @@ void setup_parallel_checkout(struct checkout *state,
 
 		item->pc_item_nr = pc->nr; /* our position in the item array */
 
-		item->helper_nr = -1; /* not yet assigned to a helper process */
+		item->child_nr = -1; /* not yet assigned to a helper process */
 		item->helper_item_nr = -1; /* not yet sent to a helper process */
 
 		ALLOC_GROW(pc->items, pc->nr + 1, pc->alloc);
@@ -1040,14 +1040,14 @@ int parallel_checkout__write_entry(const struct checkout *state,
 #if 0 // temporarily hide this while we work on classic_with_helper mode
 int parallel_checkout__set_auto_write(const struct checkout *state)
 {
-	int helper_nr;
+	int child_nr;
 	int err = 0;
 
 	trace2_region_enter("pcheckout", "set_auto_write", NULL);
 
 	sigchain_push(SIGPIPE, SIG_IGN);
-	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++)
-		err |= send_cmd__async_write(helper_nr,
+	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++)
+		err |= send_cmd__async_write(child_nr,
 					     CHECKOUT_HELPER__AUTO_ASYNC_WRITE);
 	sigchain_pop(SIGPIPE);
 
@@ -1061,7 +1061,7 @@ int parallel_checkout__collect_results(const struct checkout *state)
 {
 	struct parallel_checkout *pc = state->parallel_checkout;
 	struct parallel_checkout_item *item;
-	int helper_nr;
+	int child_nr;
 	int pc_item_nr;
 	int err = 0;
 
@@ -1071,8 +1071,8 @@ int parallel_checkout__collect_results(const struct checkout *state)
 	trace2_region_enter("pcheckout", "collect_results", NULL);
 
 	sigchain_push(SIGPIPE, SIG_IGN);
-	for (helper_nr = 0; helper_nr < helper_pool.nr; helper_nr++) {
-		err |= send_cmd__sync_mget_items(pc, helper_nr);
+	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
+		err |= send_cmd__sync_mget_items(pc, child_nr);
 	}
 	sigchain_pop(SIGPIPE);
 
