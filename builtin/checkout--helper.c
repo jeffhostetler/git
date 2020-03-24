@@ -160,7 +160,6 @@ static struct item *alloc_item(int pc_item_nr, int helper_item_nr, int mode,
 	return item;
 }
 
-#if 0 // TODO someone call this
 static void free_item(struct item *item)
 {
 	if (!item)
@@ -171,7 +170,22 @@ static void free_item(struct item *item)
 	free(item->content);
 	free(item);
 }
-#endif
+
+static void free_item_vec(void)
+{
+	/* ASSUME ON MAIN THREAD */
+
+	int k;
+
+	assert(in_shutdown); /* so no locking required */
+
+	for (k = 0; k < item_vec.nr; k++)
+		free_item(item_vec.array[k]);
+
+	FREE_AND_NULL(item_vec.array);
+	item_vec.nr = 0;
+	item_vec.alloc = 0;
+}
 
 static void item_vec_append(struct item *item)
 {
@@ -1092,7 +1106,7 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 
 	fflush(stderr);
 
-	// TODO free the array of items in item_vec.
+	free_item_vec();
 
 	return err;
 }
