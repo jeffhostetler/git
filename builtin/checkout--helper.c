@@ -1077,9 +1077,10 @@ int cmd_checkout__helper(int argc, const char **argv, const char *prefix)
 	if (writer_thread_pool_size < 1)
 		writer_thread_pool_size = DEFAULT_WRITER_THREAD_POOL_SIZE;
 	if (b_automatic)
-		set_async_write_on_items(CHECKOUT_HELPER__AUTO_WRITE);
+		authorized_end = CHECKOUT_HELPER__AUTO_WRITE;
 
-	writer_thread_pool = xcalloc(writer_thread_pool_size, sizeof(pthread_t));
+	writer_thread_pool = xcalloc(writer_thread_pool_size,
+				     sizeof(pthread_t));
 
 	snprintf(t2_category_name, sizeof(t2_category_name),
 		 "helper[%02d]", child_nr);
