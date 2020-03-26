@@ -90,6 +90,11 @@ static int completed_count;
  */
 static int authorized_end;
 
+/*
+ * The first item that should be returned in the next "progress" request.
+ */
+static int progress_begin;
+
 static pthread_mutex_t main_mutex;
 static pthread_t preload_thread;
 static pthread_t *writer_thread_pool;
@@ -271,6 +276,34 @@ static void set_async_write_on_items(int end)
 	}
 
 	pthread_mutex_unlock(&main_mutex);
+}
+
+/*
+ * Return the first item not marked DONE.
+ *
+ * Our caller can report results to the client process for
+ * items in [begin, <rval>)
+ *
+ * We take the lock while quickly scanning the item array.
+ * This gives us a snapshot of the set of DONE items.  Our
+ * caller should report that set and not try to get clever
+ * by repeatedly locking/unlocking/spinning.
+ */
+static int progress_first_not_done(void)
+{
+	/* ASSUME ON MAIN THREAD */
+
+	int k;
+
+	pthread_mutex_lock(&main_mutex);
+
+	for (k = progress_begin; k < item_vec.nr; k++)
+		if (item_vec.array[k]->item_state != ITEM_STATE__DONE)
+			break;
+
+	pthread_mutex_unlock(&main_mutex);
+
+	return item_vec.nr;
 }
 
 /*
@@ -630,6 +663,11 @@ static void *writer_thread_proc(void *_data)
 			item->item_error_class = iec;
 		}
 
+		/*
+		 * Mark the item DONE.
+		 *
+		 * From this point forward we treat this item as read-only.
+		 */
 		item->item_state = ITEM_STATE__DONE;
 
 		completed_count++;
@@ -691,7 +729,7 @@ static int helper_cmd__async_queue(const char *start_line)
 		if (len < sizeof(struct checkout_helper__queue_item_record))
 			BUG("%s[%s]: record too short (obs %d, exp %d)",
 			    t2_category_name, start_line, len,
-			    (int)sizeof(struct checkout_helper__queue_item_record));
+			    (int)sizeof(fixed_fields));
 
 		/*
 		 * memcpy the fixed portion into a proper structure to
@@ -700,9 +738,10 @@ static int helper_cmd__async_queue(const char *start_line)
 		memcpy(&fixed_fields, data_line,
 		       sizeof(struct checkout_helper__queue_item_record));
 
-		variant = data_line + sizeof(struct checkout_helper__queue_item_record);
+		variant = data_line + sizeof(fixed_fields);
 		if (fixed_fields.len_encoding_name) {
-			encoding = xmemdupz(variant, fixed_fields.len_encoding_name);
+			encoding = xmemdupz(variant,
+					    fixed_fields.len_encoding_name);
 			variant += fixed_fields.len_encoding_name;
 		} else
 			encoding = NULL;
@@ -912,11 +951,79 @@ static int helper_cmd__sync_get_items(const char *start_line)
 
 }
 
+/*
+ * This command verb is used by the client (foreground) process to
+ * request incremental progress reports and results from this helper
+ * process.
+ *
+ * We respond with the results for zero or more completed items (since
+ * the previous progress report).  A response with zero items just
+ * means that there are no new results since the last request.  The
+ * client knows how many items were assigned to this helper process
+ * and should keep polling until it receives results for all of them.
+ *
+ * We expect:
+ *     command=<cmd>
+ *     <flush>
+ *
+ * We respond:
+ *     [<result_k>
+ *      [<result_k+1>
+ *       [...]]]
+ *     <flush>
+ *
+ * This version always sends the full set of newly completed items.
+ * [] It does not wait or have a timeout to accumulate a minimum number
+ *    of items.
+ * [] It does not have a maximum number of items (chunk size) parameter.
+ * The assumption is that the client process is polling over 1 or more
+ * helper processes (and displaying console progress) and needs to
+ * control such things.  So for simplicity, we have omitted such things
+ * for now.
+ */
+static int helper_cmd__auto_progress(const char *start_line)
+{
+	char *data_line;
+	int len;
+	int end;
+	int k;
+
+	trace2_printf("%s[%s]:", t2_category_name, start_line);
+
+	/*
+	 * Eat the flush packet.  Since we currently don't expect any
+	 * parameters, eat them too.
+	 */
+	while (1) {
+		len = packet_read_line_gently(0, NULL, &data_line);
+		if (len < 0 || !data_line)
+			break;
+	}
+
+	end = progress_first_not_done();
+
+	/*
+	 * All items in contiguous range [begin, end) are marked DONE
+	 * and are treated as read-only.  Therefore, we can access them
+	 * without holding the lock.
+	 */
+	for (k = progress_begin; k < end; k++)
+		send_1_item(item_vec.array[k], k);
+
+	/*
+	 * The next progress response will start where we left off.
+	 */
+	progress_begin = end;
+
+	return packet_flush_gently(1);
+}
+
 static struct helper_capability caps[] = {
-	{ "queue", 0, helper_cmd__async_queue },
-	{ "write", 0, helper_cmd__async_write },
-	{ "get1",  0, helper_cmd__sync_get1_item },
-	{ "mget",  0, helper_cmd__sync_get_items },
+	{ "queue",     0, helper_cmd__async_queue },
+	{ "write",     0, helper_cmd__async_write },
+	{ "get1",      0, helper_cmd__sync_get1_item },
+	{ "mget",      0, helper_cmd__sync_get_items },
+	{ "progress",  0, helper_cmd__auto_progress },
 	{ NULL, 0, NULL },
 };
 
