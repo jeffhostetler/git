@@ -80,7 +80,16 @@ static int helper_pool_initialized;
 struct helper_process {
 	struct subprocess_entry subprocess; /* must be first */
 	unsigned int supported_capabilities;
+
+	/* the number of items sent to this helper */
 	int helper_item_count;
+
+	/* the number of items for which we've received results */
+	int helper_result_count;
+
+	int helper_finished_or_dead;
+
+	/* TODO do we still need this */
 	int max_sent_async_write;
 };
 
@@ -212,12 +221,14 @@ static int helper_error(struct parallel_checkout_item *item)
 #define CAP_WRITE       (1u<<2)
 #define CAP_GET1        (1u<<3)
 #define CAP_MGET        (1u<<4)
-#define CAP_EVERYTHING  (CAP_QUEUE | CAP_WRITE | CAP_GET1 | CAP_MGET)
+#define CAP_PROGRESS    (1u<<5)
+#define CAP_EVERYTHING  (CAP_QUEUE | CAP_WRITE | CAP_GET1 | CAP_MGET | CAP_PROGRESS)
 
 #define CAP_QUEUE_NAME  "queue"
 #define CAP_WRITE_NAME  "write"
 #define CAP_GET1_NAME   "get1"
 #define CAP_MGET_NAME   "mget"
+#define CAP_PROGRESS_NAME "progress"
 
 static int helper_start_fn(struct subprocess_entry *subprocess)
 {
@@ -227,6 +238,7 @@ static int helper_start_fn(struct subprocess_entry *subprocess)
 		{ CAP_WRITE_NAME, CAP_WRITE },
 		{ CAP_GET1_NAME,  CAP_GET1  },
 		{ CAP_MGET_NAME,  CAP_MGET  },
+		{ CAP_PROGRESS_NAME, CAP_PROGRESS },
 		{ NULL, 0 }
 	};
 
@@ -257,7 +269,8 @@ static struct helper_process *helper_find_or_start_process(
 	argv_array_pushf(&argv, "--writers=%d", nr_writer_threads_per_helper_process_wanted);
 	argv_array_pushf(&argv, "--preload=%d", preload_queue_size);
 
-	// TODO add -a when in clone or sparse add ?
+	// TODO only add --automatic when in clone or sparse add ??
+	argv_array_push(&argv, "--automatic");
 
 	sq_quote_argv_pretty(&quoted, argv.argv);
 
@@ -653,6 +666,10 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 		}
 	}
 
+	// TODO when in auto-progress mode, we could spread them
+	// vertically rather than horizontally and maybe avoid
+	// directory locks in the kernel.
+
 	/*
 	 * Distribute the array of items to the helpers as part of
 	 * the queue command that we've opened.
@@ -794,8 +811,14 @@ void setup_parallel_checkout(struct checkout *state,
 
 		if (!(ce->ce_flags & CE_UPDATE))
 			continue;
+
 		if ((ce->ce_mode & S_IFMT) != S_IFREG)
 			continue;
+
+		if (ce->ce_flags & CE_WT_REMOVE)
+		    BUG("both update and delete flags are set on %s",
+			ce->name);
+
 		nr_updated_files++;
 	}
 	if (nr_updated_files <= core_parallel_checkout_threshold)
@@ -956,6 +979,11 @@ static int update_cache_entry_for_item(const struct checkout *state,
 	assert(state->istate);
 	assert(state->refresh_cache);
 
+	// TODO if the item got an EEXIST on open() and we are doing
+	// TODO the auto-progress (fast parallel) mode and we are
+	// TODO doing a clone we need to compute the collisions
+	// TODO after everything is done.
+
 	if (item->item_result.item_error_class != IEC__OK) {
 		helper_error(item);
 		return 1;
@@ -1096,3 +1124,128 @@ int parallel_checkout__collect_results(const struct checkout *state)
 }
 
 #endif // temporary
+
+/*
+ * Request progress information and item results from a helper.
+ *
+ * We receive data for zero or more items.  This is the set of
+ * contiguous items (from the point of view of this helper) that
+ * are currently marked DONE and haven't been previously reported.
+ */
+static int get_helper_progress(const struct checkout *state, int child_nr,
+			       struct progress *progress, unsigned *result_cnt)
+{
+	char buffer[LARGE_PACKET_MAX];
+	struct parallel_checkout *pc = state->parallel_checkout;
+	struct helper_process *hp = helper_pool.array[child_nr];
+	struct child_process *process = &hp->subprocess.process;
+	struct parallel_checkout_item *item;
+	char *line;
+	int len;
+	int err = 0;
+	const struct checkout_helper__item_result *temp;
+	unsigned cnt = *result_cnt;
+//	int begin = hp->helper_result_count;
+
+	if (packet_write_fmt_gently(process->in, "command=progress\n") ||
+	    packet_flush_gently(process->in)) {
+		hp->helper_finished_or_dead = 1;
+		return 1;
+	}
+	
+	while (1) {
+		len = packet_read_line_gently_r(process->out, NULL, &line,
+						buffer, sizeof(buffer));
+		if (len < 0 || !line)
+			break;
+
+		if (len != sizeof(struct checkout_helper__item_result))
+			BUG("checkout-helper response wrong (obs %d, exp %d)",
+			    len,
+			    (int)sizeof(struct checkout_helper__item_result));
+
+		/*
+		 * Peek at the response and make sure it looks right before use it.
+		 */
+		temp = (const struct checkout_helper__item_result *)line;
+		assert(temp->item_error_class != IEC__INVALID_ITEM);
+		assert(temp->helper_item_nr < hp->helper_item_count);
+		assert(temp->pc_item_nr < pc->nr);
+
+		/*
+		 * Find the corresponding parallel_checkout_item in our vector
+		 * for the response and verify that is the one we sent to the
+		 * helper.
+		 */
+		item = pc->items[temp->pc_item_nr];
+		assert(item->helper_item_nr == temp->helper_item_nr);
+		assert(item->pc_item_nr == temp->pc_item_nr);
+		assert(item->child_nr == child_nr);
+
+		memcpy(&item->item_result, line,
+		       sizeof(struct checkout_helper__item_result));
+
+		display_progress(progress, ++cnt);
+
+		item->ce->ce_flags &= ~CE_UPDATE;
+
+		debug_dump_item(item, "auto-progress");
+
+		assert(temp->helper_item_nr == hp->helper_result_count);
+		hp->helper_result_count++;
+
+		if (state->refresh_cache)
+			if (update_cache_entry_for_item(state, item))
+				err = 1;
+	}
+
+	if (hp->helper_result_count == hp->helper_item_count)
+		hp->helper_finished_or_dead = 1;
+
+//	trace2_printf("progress[%d]: total=%d, (%d .. %d) err=%d",
+//		      child_nr,
+//		      hp->helper_item_count,
+//		      begin, hp->helper_result_count, err);
+
+	*result_cnt = cnt;
+
+	return err;
+}
+
+/*
+ * Poll for progress and item results from all of the helpers.
+ */
+int parallel_checkout__auto_progress(const struct checkout *state,
+				     struct progress *progress,
+				     unsigned *result_cnt)
+{
+	int child_nr;
+	int err = 0;
+	int nr_children_still_working = helper_pool.nr;
+
+	trace2_region_enter("pcheckout", "auto-progress", NULL);
+
+	sigchain_push(SIGPIPE, SIG_IGN);
+
+	while (nr_children_still_working) {
+		for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
+			struct helper_process *hp = helper_pool.array[child_nr];
+
+			if (hp->helper_finished_or_dead)
+				continue;
+		
+			if (get_helper_progress(state, child_nr,
+						progress, result_cnt))
+				err = 1;
+
+			if (hp->helper_finished_or_dead)
+				nr_children_still_working--;
+		}
+	}
+
+	sigchain_pop(SIGPIPE);
+
+	trace2_region_leave("pcheckout", "auto-progress", NULL);
+
+	return err;
+}

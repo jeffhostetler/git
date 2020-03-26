@@ -367,7 +367,7 @@ static int check_updates_loop__classic(struct checkout *state,
 				       struct progress *progress,
 				       unsigned *result_cnt)
 {
-	unsigned cnt = 0;
+	unsigned cnt = *result_cnt;
 	int errs = 0;
 	struct index_state *index = &o->result;
 	int i;
@@ -391,6 +391,7 @@ static int check_updates_loop__classic(struct checkout *state,
 	return errs;
 }
 
+#if 0 // temporary to quiet compiler
 /*
  * Setup the checkout--helper(s) if appropriate and use the
  * original sequential checkout but modified to let the helper
@@ -421,10 +422,10 @@ static int check_updates_loop__classic_with_helper(
 
 	return errs;
 }
+#endif
+#if 1 // temporary to quiet compiler warning
 
-#if 0 // temporary to quiet compiler warning
-
-static int check_updates_loop__parallel__auto_mode(
+static int check_updates_loop__parallel__auto_progress(
 	struct checkout *state,
 	struct unpack_trees_options *o,
 	struct progress *progress,
@@ -440,15 +441,18 @@ static int check_updates_loop__parallel__auto_mode(
 		return check_updates_loop__classic(state, o, progress,
 						   result_cnt);
 
-	trace2_region_enter("pcheckout", "auto_mode", NULL);
+	trace2_region_enter("pcheckout", "auto_progress", NULL);
 
 	assert(o->update);
 	assert(!o->dry_run);
 
 	/*
-	 * Pass 1: handle the cache-entries that were NOT eligible
-	 * so that we get the same sequential semantics WRT creating
-	 * the files and/or parent directories.
+	 * Pass 1: sequentially handle the cache-entries that were NOT
+	 * eligible for parallel checkout for some reason.  This helps
+	 * ensure that we get the same sequential semantics WRT creating
+	 * the files and/or parent directories.  It also helps ensure
+	 * that we get the same custom smudging and/or delayed-checkout
+	 * handling.
 	 */
 	for (i = 0; i < index->cache_nr; i++) {
 		struct cache_entry *ce = index->cache[i];
@@ -469,41 +473,18 @@ static int check_updates_loop__parallel__auto_mode(
 	/*
 	 * Pass 2: let the helper process(es) run in fully automatic
 	 * mode and write files in parallel as fast as they can.
-	 *
-	 * TODO if this fails do we want to run the classic loop on
-	 * the unpopulated items ??
 	 */
-	errs |= parallel_checkout__set_auto_write(state);
-	errs |= parallel_checkout__collect_results(state);
+// TODO	errs |= parallel_checkout__set_auto_write(state);
+	if (parallel_checkout__auto_progress(state, progress, &cnt))
+	    errs = 1;
+//	errs |= parallel_checkout__collect_results(state);
 
-	/*
-	 * Pass 3: fixup ce_flags for the items that the helpers updated
-	 * on disk.
-	 */
-	for (i = 0; i < index->cache_nr; i++) {
-		struct cache_entry *ce = index->cache[i];
-
-		if (!ce->parallel_checkout_item)
-			continue;
-
-		assert(ce->ce_flags & CE_UPDATE);
-		// TODO in the classic loop, it only calls checkout_entry()
-		// TODO for items with CE_UPDATE set.  and it calls BUG() if
-		// TODO CE_WT_REMOVE is also set.  But checkout_entry() tests
-		// TODO CE_WT_REMOVE -- which the classic code will never call.
-		// TODO are there other callers of checkout_entry() that do this?
-		assert(!(ce->ce_flags & CE_WT_REMOVE));
-
-		display_progress(progress, ++cnt);
-		ce->ce_flags &= ~CE_UPDATE;
-
-		// TODO get errno from item_result...
-//		errs |= checkout_entry(ce, state, NULL, NULL);
-	}
+	// TODO phase 3:  if in a clone, see if we need to display
+	// TODO collisions and etc.
 
 	*result_cnt = cnt;
 
-	trace2_region_leave("pcheckout", "auto_mode", NULL);
+	trace2_region_leave("pcheckout", "auto_progress", NULL);
 
 	finish_parallel_checkout(state);
 
@@ -519,8 +500,9 @@ static int check_updates_loop(struct checkout *state,
 	int errs;
 
 //	errs = check_updates_loop__classic(state, o, progress, result_cnt);
-	errs = check_updates_loop__classic_with_helper(state, o, progress, result_cnt);
-//	errs = check_updates_loop__parallel__auto_mode(state, o, progress, result_cnt);
+//	errs = check_updates_loop__classic_with_helper(state, o, progress, result_cnt);
+	errs = check_updates_loop__parallel__auto_progress(state, o, progress,
+							   result_cnt);
 
 	return errs;
 }

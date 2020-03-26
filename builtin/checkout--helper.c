@@ -156,7 +156,7 @@ static struct item *alloc_item(int pc_item_nr, int helper_item_nr, int mode,
 	item->ca.working_tree_encoding = encoding;
 	item->path = path;
 
-#if 1
+#if 0
 	trace2_printf("%s: item (%d,%d) %s {%d, %d, %d, %s} {%s, %o}",
 		      t2_category_name,
 		      pc_item_nr, helper_item_nr,
@@ -282,7 +282,7 @@ static void set_async_write_on_items(int end)
  * Return the first item not marked DONE.
  *
  * Our caller can report results to the client process for
- * items in [begin, <rval>)
+ * the DONE items in [begin, <rval>).
  *
  * We take the lock while quickly scanning the item array.
  * This gives us a snapshot of the set of DONE items.  Our
@@ -297,13 +297,14 @@ static int progress_first_not_done(void)
 
 	pthread_mutex_lock(&main_mutex);
 
-	for (k = progress_begin; k < item_vec.nr; k++)
+	for (k = progress_begin; k < item_vec.nr; k++) {
 		if (item_vec.array[k]->item_state != ITEM_STATE__DONE)
 			break;
+	}
 
 	pthread_mutex_unlock(&main_mutex);
 
-	return item_vec.nr;
+	return k;
 }
 
 /*
@@ -489,8 +490,8 @@ static enum checkout_helper__item_error_class write_item_to_disk(struct item *it
 	int did_fstat = 0;
 	struct my_create_file_data d = { item, -1 };
 
-	trace2_printf("%s:[item %d] write '%s'", t2_category_name,
-		      item->helper_item_nr, item->path);
+//	trace2_printf("%s:[item %d] write '%s'", t2_category_name,
+//		      item->helper_item_nr, item->path);
 
 	if (raceproof_create_file(item->path, my_create_file_cb, &d)) {
 		item->item_errno = errno;
@@ -988,7 +989,7 @@ static int helper_cmd__auto_progress(const char *start_line)
 	int end;
 	int k;
 
-	trace2_printf("%s[%s]:", t2_category_name, start_line);
+//	trace2_printf("%s[%s]:", t2_category_name, start_line);
 
 	/*
 	 * Eat the flush packet.  Since we currently don't expect any
@@ -1001,6 +1002,9 @@ static int helper_cmd__auto_progress(const char *start_line)
 	}
 
 	end = progress_first_not_done();
+
+//	trace2_printf("%s[%s]: response [%d .. %d)",
+//		      t2_category_name, start_line, progress_begin, end);
 
 	/*
 	 * All items in contiguous range [begin, end) are marked DONE
