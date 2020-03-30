@@ -14,8 +14,12 @@ test_description='Parallel Checkout (Collisions)'
 #
 # These tests are to verify that the collision detection is extended to allow
 # for racy order.
+#
+# This test is based on the collision detection test in t5601.
 
 test_expect_success CASE_INSENSITIVE_FS 'clone on case-insensitive fs' '
+	test_when_finished "rm -rf warning.* repo.* icasefs" &&
+
 	git init icasefs &&
 	git -C icasefs config --local core.parallelcheckoutthreshold 1 &&
 	o=$(git -C icasefs hash-object -w --stdin </dev/null | hex2oct) &&
@@ -26,7 +30,10 @@ test_expect_success CASE_INSENSITIVE_FS 'clone on case-insensitive fs' '
 
 	for k in 0 1
 	do
-		GIT_TRACE2_PERF=$(pwd)/trace.$k git -c core.parallelcheckout=$k clone -b BranchX icasefs repo.$k 2>warning.$k &&
+		# TODO should we add a GIT_TEST_something to ensure that
+		# TODO the parallel-checkout code is actually used?
+
+		git -c core.parallelcheckout=$k clone -b BranchX icasefs repo.$k 2>warning.$k &&
 
 		grep File_X warning.$k &&
 		grep File_x warning.$k &&
