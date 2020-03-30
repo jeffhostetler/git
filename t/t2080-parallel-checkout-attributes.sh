@@ -1,6 +1,6 @@
 #!/bin/sh
 
-test_description='Parallel Checkout'
+test_description='Parallel Checkout (Attributes)'
 
 . ./test-lib.sh
 
