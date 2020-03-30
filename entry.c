@@ -426,6 +426,31 @@ static void mark_colliding_entries(const struct checkout *state,
 		if ((trust_ino && !match_stat_data(&dup->ce_stat_data, st)) ||
 		    (!trust_ino && !fspathcmp(ce->name, dup->name))) {
 			dup->ce_flags |= CE_MATCHED;
+			return;
+		}
+	}
+
+	if (!state->parallel_checkout)
+		return;
+	/*
+	 * When parallel-checkout is enabled, the files are populated in a
+	 * racy order and so the other side of the collision may appear after
+	 * the given cache-entry in the array.
+	 */
+	for (i += 1; i < state->istate->cache_nr; i++) {
+		struct cache_entry *dup = state->istate->cache[i];
+
+		if (!dup->parallel_checkout_item)
+			continue;
+		if (!parallel_checkout__created_file(dup))
+			continue;
+
+		if (dup->ce_flags & (CE_MATCHED | CE_VALID | CE_SKIP_WORKTREE))
+			continue;
+
+		if ((trust_ino && !match_stat_data(&dup->ce_stat_data, st)) ||
+		    (!trust_ino && !fspathcmp(ce->name, dup->name))) {
+			dup->ce_flags |= CE_MATCHED;
 			break;
 		}
 	}

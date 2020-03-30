@@ -23,4 +23,6 @@ int parallel_checkout__classify_result(struct cache_entry *ce,
 				       struct progress *progress,
 				       unsigned *result_cnt);
 
+int parallel_checkout__created_file(struct cache_entry *ce);
+
 #endif /* PARALLEL_CHECKOUT_H */

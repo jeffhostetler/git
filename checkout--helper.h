@@ -36,7 +36,7 @@ enum checkout_helper__item_error_class {
 	IEC__NO_RESULT = 0, /* no result from helper process (yet) */
 	IEC__INVALID_ITEM, /* helper does not know about this item */
 	IEC__OK,
-	IEC__LOAD,
+	IEC__LOAD, /* helper could not load blob into memory */
 	IEC__OPEN, /* helper could not create the file, see item_errno */
 	IEC__WRITE,
 	IEC__LSTAT,

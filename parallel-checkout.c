@@ -1083,6 +1083,44 @@ int parallel_checkout__classify_result(struct cache_entry *ce,
 	return result;
 }
 
+/*
+ * Was this item created by a helper?
+ */
+int parallel_checkout__created_file(struct cache_entry *ce)
+{
+	struct parallel_checkout_item *item = ce->parallel_checkout_item;
+
+	assert(item);
+
+	switch (item->item_result.item_error_class) {
+	case IEC__NO_RESULT: /* we don't know */
+		return 0;
+
+	case IEC__INVALID_ITEM: /* item unknown to helper */
+		return 0;
+
+	case IEC__OK:
+		return 1;
+
+	case IEC__LOAD:
+		return 0;
+
+	case IEC__OPEN:
+		return 0;
+
+	case IEC__WRITE: /* created but couldn't write (eg. disk space?) */
+		return 1;
+
+	case IEC__LSTAT: /* created but couldn't lstat ? */
+		return 1;
+
+	default:
+		error("Invalid IEC for file '%s': %d",
+		      item->ce->name, item->item_result.item_error_class);
+		return 0;
+	}
+}
+
 #if 0
 static int write_entry_1(struct parallel_checkout_item *item)
 {
