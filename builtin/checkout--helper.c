@@ -709,6 +709,9 @@ struct helper_capability {
  *     <flush>
  *
  * We do not send a response.
+ *
+ * The client process is free to send one big batch or to send
+ * multiple batches of items.
  */
 static int helper_cmd__async_queue(const char *start_line)
 {

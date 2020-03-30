@@ -423,7 +423,6 @@ static int check_updates_loop__classic_with_helper(
 	return errs;
 }
 #endif
-#if 1 // temporary to quiet compiler warning
 
 static int check_updates_loop__parallel__auto_progress(
 	struct checkout *state,
@@ -431,7 +430,7 @@ static int check_updates_loop__parallel__auto_progress(
 	struct progress *progress,
 	unsigned *result_cnt)
 {
-	unsigned cnt = 0;
+	unsigned cnt = *result_cnt;
 	int errs = 0;
 	struct index_state *index = &o->result;
 	int i;
@@ -441,24 +440,35 @@ static int check_updates_loop__parallel__auto_progress(
 		return check_updates_loop__classic(state, o, progress,
 						   result_cnt);
 
-	trace2_region_enter("pcheckout", "auto_progress", NULL);
-
 	assert(o->update);
 	assert(!o->dry_run);
 
 	/*
-	 * Pass 1: sequentially handle the cache-entries that were NOT
-	 * eligible for parallel checkout for some reason.  This helps
-	 * ensure that we get the same sequential semantics WRT creating
-	 * the files and/or parent directories.  It also helps ensure
-	 * that we get the same custom smudging and/or delayed-checkout
-	 * handling.
+	 * Step 1: Poll for progress and reap results for each cache-entry.
+	 *
+	 * Note that because we used '--automatic' when we started the helper
+	 * processes, they are able to run fully asynchronously on the set
+	 * of items they were given and have already started populating the
+	 * working directory.  Our job here is to just collect progress
+	 * information and wait for them to finish.
+	 */
+	errs |= parallel_checkout__auto_progress(state, progress, &cnt);
+
+	/*
+	 * Step 2: sequentially handle the cache-entries that were NOT
+	 * eligible for parallel checkout for some reason.  This uses the
+	 * original (sequential) checkout_entry() to spawn any necessary
+	 * custom smudging and queues delayed items (such as LFS).
+	 *
+	 * Also let the sequential/classic logic retry items with certain
+	 * errors or print error messages for them (so that they are in
+	 * cache-entry order).
 	 */
 	for (i = 0; i < index->cache_nr; i++) {
 		struct cache_entry *ce = index->cache[i];
 
 		if (ce->parallel_checkout_item)
-			continue;
+			parallel_checkout__classify_result(ce, progress, &cnt);
 
 		if (ce->ce_flags & CE_UPDATE) {
 			if (ce->ce_flags & CE_WT_REMOVE)
@@ -470,27 +480,12 @@ static int check_updates_loop__parallel__auto_progress(
 		}
 	}
 
-	/*
-	 * Pass 2: let the helper process(es) run in fully automatic
-	 * mode and write files in parallel as fast as they can.
-	 */
-// TODO	errs |= parallel_checkout__set_auto_write(state);
-	if (parallel_checkout__auto_progress(state, progress, &cnt))
-	    errs = 1;
-//	errs |= parallel_checkout__collect_results(state);
-
-	// TODO phase 3:  if in a clone, see if we need to display
-	// TODO collisions and etc.
-
 	*result_cnt = cnt;
-
-	trace2_region_leave("pcheckout", "auto_progress", NULL);
 
 	finish_parallel_checkout(state);
 
 	return errs;
 }
-#endif
 
 static int check_updates_loop(struct checkout *state,
 			      struct unpack_trees_options *o,

@@ -16,8 +16,11 @@ int parallel_checkout__write_entry(const struct checkout *state,
 int parallel_checkout__collect_results(const struct checkout *state);
 
 int parallel_checkout__auto_progress(const struct checkout *state,
-									 struct progress *progress,
-									 unsigned *result_cnt);
+				     struct progress *progress,
+				     unsigned *result_cnt);
 
+int parallel_checkout__classify_result(struct cache_entry *ce,
+				       struct progress *progress,
+				       unsigned *result_cnt);
 
 #endif /* PARALLEL_CHECKOUT_H */

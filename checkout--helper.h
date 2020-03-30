@@ -33,10 +33,11 @@ struct checkout_helper__queue_item_record {
  * Conceptually, this is half of a { <class>, <errno> } tuple.
  */
 enum checkout_helper__item_error_class {
-	IEC__OK = 0,
-	IEC__INVALID_ITEM,
+	IEC__NO_RESULT = 0, /* no result from helper process (yet) */
+	IEC__INVALID_ITEM, /* helper does not know about this item */
+	IEC__OK,
 	IEC__LOAD,
-	IEC__OPEN,
+	IEC__OPEN, /* helper could not create the file, see item_errno */
 	IEC__WRITE,
 	IEC__LSTAT,
 };

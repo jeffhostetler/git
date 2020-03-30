@@ -87,7 +87,7 @@ struct helper_process {
 	/* the number of items for which we've received results */
 	int helper_result_count;
 
-	int helper_finished_or_dead;
+	int helper_is_dead_to_us;
 
 	/* TODO do we still need this */
 	int max_sent_async_write;
@@ -174,11 +174,13 @@ static void free_parallel_checkout(struct parallel_checkout *pc)
  * process control the ordering of messages to better match the
  * order from the classic (sequential) version.
  */
-static int helper_error(struct parallel_checkout_item *item)
+static void parallel_checkout__print_helper_error(
+	struct parallel_checkout_item *item)
 {
 	switch (item->item_result.item_error_class) {
+	case IEC__NO_RESULT:
 	case IEC__OK:
-		return IEC__OK;
+		return;
 
 	case IEC__INVALID_ITEM:
 		/*
@@ -186,32 +188,32 @@ static int helper_error(struct parallel_checkout_item *item)
 		 */
 		error("Invalid item for helper[%d] '%s'",
 		      item->child_nr, item->ce->name);
-		return 1;
+		return;
 
 	case IEC__LOAD:
 		error("error loading blob for '%s': %s",
 		      item->ce->name, strerror(item->item_result.item_errno));
-		return 1;
+		return;
 
 	case IEC__OPEN:
 		error("error creating file '%s': %s",
 		      item->ce->name, strerror(item->item_result.item_errno));
-		return 1;
+		return;
 
 	case IEC__WRITE:
 		error("error writing to file '%s': %s",
 		      item->ce->name, strerror(item->item_result.item_errno));
-		return 1;
+		return;
 
 	case IEC__LSTAT:
 		error("error stating file '%s': %s",
 		      item->ce->name, strerror(item->item_result.item_errno));
-		return 1;
+		return;
 
 	default:
 		error("Invalid IEC for file '%s': %d",
 		      item->ce->name, item->item_result.item_error_class);
-		return 1;
+		return;
 	}
 }
 
@@ -411,6 +413,7 @@ static void send__queue_item_record(struct parallel_checkout *pc,
 	free(data);
 }
 
+#if 0
 /*
  * "async write" tells helper[child_nr] that all items in [0, end) can
  * be written when ready.
@@ -438,7 +441,8 @@ static int send_cmd__async_write(int child_nr, int end)
 
 	return 0;
 }
-
+#endif
+#if 0
 /*
  * "async write" tells the helper associated with this item that all
  * items in [0, item_nr] can be written when ready.
@@ -448,6 +452,7 @@ static int send_cmd__async_write_item(struct parallel_checkout_item *item)
 	return send_cmd__async_write(item->child_nr,
 				     item->helper_item_nr + 1);
 }
+#endif
 
 static void debug_dump_item(const struct parallel_checkout_item *item,
 			    const char *label)
@@ -473,6 +478,7 @@ static void debug_dump_item(const struct parallel_checkout_item *item,
 #endif
 }
 
+#if 0
 static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
 {
 	char buffer[LARGE_PACKET_MAX];
@@ -525,6 +531,7 @@ static int send_cmd__sync_get1_item(struct parallel_checkout_item *item)
 
 	return 0;
 }
+#endif
 
 #if 0 // temporarily hide this while we focus on classic-with-helper mode
 /*
@@ -965,41 +972,118 @@ void finish_parallel_checkout(struct checkout *state)
 }
 
 ///////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////
 
 /*
- * Apply response from the helper (and lstat data) to the cache-entry.
+ * Apply successful response from the helper (and lstat data) to the
+ * cache-entry.
  *
  * This should match the code at the bottom of entry.c:write_entry()
  * at the "finish:" label.
  */
-static int update_cache_entry_for_item(const struct checkout *state,
-				       struct parallel_checkout_item *item)
+static void parallel_checkout__update_cache_entry(
+	const struct checkout *state,
+	struct parallel_checkout_item *item)
 {
-	assert(state->istate);
-	assert(state->refresh_cache);
+	/* Flush cached lstat in fscache after writing to disk. */
+	flush_fscache();
 
-	// TODO if the item got an EEXIST on open() and we are doing
-	// TODO the auto-progress (fast parallel) mode and we are
-	// TODO doing a clone we need to compute the collisions
-	// TODO after everything is done.
+	if (state->refresh_cache) {
+		assert(state->istate);
 
-	if (item->item_result.item_error_class != IEC__OK) {
-		helper_error(item);
-		return 1;
+		if (item->item_result.item_error_class == IEC__OK) {
+			fill_stat_cache_info(state->istate, item->ce,
+					     &item->item_result.st);
+			item->ce->ce_flags |= CE_UPDATE_IN_BASE;
+			mark_fsmonitor_invalid(state->istate, item->ce);
+			state->istate->cache_changed |= CE_ENTRY_CHANGED;
+		}
 	}
-
-	// TODO flush_fscache() ??
-
-	fill_stat_cache_info(state->istate, item->ce,
-			     &item->item_result.st);
-	item->ce->ce_flags |= CE_UPDATE_IN_BASE;
-	mark_fsmonitor_invalid(state->istate, item->ce);
-	state->istate->cache_changed |= CE_ENTRY_CHANGED;
-
-	return 0;
 }
 
+/*
+ * Was this item succefully populated by a helper?
+ *
+ * Returns:
+ * 1 if the item was successfully populated.
+ * 0 if there is a retryable error.
+ * -1 if there was an error that should not be retried.
+ *
+ * Emit an error message for the latter ones.
+ */
+int parallel_checkout__classify_result(struct cache_entry *ce,
+				       struct progress *progress,
+				       unsigned *result_cnt)
+{
+	struct parallel_checkout_item *item = ce->parallel_checkout_item;
+	unsigned cnt = *result_cnt;
+	int result;
+
+	assert(item);
+	
+	switch (item->item_result.item_error_class) {
+	case IEC__OK:
+		/*
+		 * This item was completely handled and progress meter
+		 * was advanced.
+		 */
+		assert(!(ce->ce_flags & CE_UPDATE));
+		result = 1;
+
+		break;
+
+	case IEC__NO_RESULT:
+		/*
+		 * The helper died or for some other reason we did not get
+		 * a response for this item.  The progress meter was not
+		 * advanced.
+		 */
+		assert(ce->ce_flags & CE_UPDATE);
+
+		result = 0;
+		break;
+
+	case IEC__OPEN:
+		/*
+		 * The helper could not create the file, suppress
+		 * the error message and let the classic code try it.
+		 *
+		 * The progress meter was not advanced.
+		 *
+		 * (The parallel code doesn't try do the
+		 * lstat/is-clean/delete logic -- it only does
+		 * open(O_CREAT).)  This has the side-effect of adding
+		 * it to the clone collision data if appropriate.)
+		 */
+		assert(ce->ce_flags & CE_UPDATE);
+
+		result = 0;
+		break;
+
+	default:
+		/*
+		 * For any other helper errors, just print the error
+		 * message and go on.
+		 *
+		 * We only really expect a missing blob or full disk
+		 * error and trying it again probably won't fix that.
+		 *
+		 * Advance the progress meter.
+		 */
+		assert(ce->ce_flags & CE_UPDATE);
+		parallel_checkout__print_helper_error(item);
+
+		display_progress(progress, ++cnt);
+		ce->ce_flags &= ~CE_UPDATE;
+
+		result = -1;
+		break;
+	}
+
+	*result_cnt = cnt;
+	return result;
+}
+
+#if 0
 static int write_entry_1(struct parallel_checkout_item *item)
 {
 	if (send_cmd__async_write_item(item))
@@ -1066,64 +1150,10 @@ int parallel_checkout__write_entry(const struct checkout *state,
 		return update_cache_entry_for_item(state, item);
 	return 0;
 }
+#endif // temp
 
-#if 0 // temporarily hide this while we work on classic_with_helper mode
-int parallel_checkout__set_auto_write(const struct checkout *state)
-{
-	int child_nr;
-	int err = 0;
-
-	trace2_region_enter("pcheckout", "set_auto_write", NULL);
-
-	sigchain_push(SIGPIPE, SIG_IGN);
-	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++)
-		err |= send_cmd__async_write(child_nr,
-					     CHECKOUT_HELPER__AUTO_ASYNC_WRITE);
-	sigchain_pop(SIGPIPE);
-
-	trace2_region_leave("pcheckout", "set_auto_write", NULL);
-
-	return err;
-
-}
-
-int parallel_checkout__collect_results(const struct checkout *state)
-{
-	struct parallel_checkout *pc = state->parallel_checkout;
-	struct parallel_checkout_item *item;
-	int child_nr;
-	int pc_item_nr;
-	int err = 0;
-
-	if (!pc)
-		return 0;
-
-	trace2_region_enter("pcheckout", "collect_results", NULL);
-
-	sigchain_push(SIGPIPE, SIG_IGN);
-	for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
-		err |= send_cmd__sync_mget_items(pc, child_nr);
-	}
-	sigchain_pop(SIGPIPE);
-
-	if (state->refresh_cache) {
-		for (pc_item_nr = 0;
-		     pc_item_nr < pc->nr;
-		     pc_item_nr++) {
-			item = pc->items[pc_item_nr];
-			err |= update_cache_entry_for_item(state, item);
-		}
-	}
-
-	trace2_region_leave("pcheckout", "collect_results", NULL);
-
-	// TODO if err handle both client/helper IO errors and
-	// TODO update ce problems.
-
-	return err;
-}
-
-#endif // temporary
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
 
 /*
  * Request progress information and item results from a helper.
@@ -1131,6 +1161,9 @@ int parallel_checkout__collect_results(const struct checkout *state)
  * We receive data for zero or more items.  This is the set of
  * contiguous items (from the point of view of this helper) that
  * are currently marked DONE and haven't been previously reported.
+ *
+ * Return 1 if we have a packet IO failure.  (Errors for actually
+ * populating files are handled later.)
  */
 static int get_helper_progress(const struct checkout *state, int child_nr,
 			       struct progress *progress, unsigned *result_cnt)
@@ -1142,14 +1175,12 @@ static int get_helper_progress(const struct checkout *state, int child_nr,
 	struct parallel_checkout_item *item;
 	char *line;
 	int len;
-	int err = 0;
 	const struct checkout_helper__item_result *temp;
 	unsigned cnt = *result_cnt;
-//	int begin = hp->helper_result_count;
 
 	if (packet_write_fmt_gently(process->in, "command=progress\n") ||
 	    packet_flush_gently(process->in)) {
-		hp->helper_finished_or_dead = 1;
+		hp->helper_is_dead_to_us = 1;
 		return 1;
 	}
 	
@@ -1168,6 +1199,7 @@ static int get_helper_progress(const struct checkout *state, int child_nr,
 		 * Peek at the response and make sure it looks right before use it.
 		 */
 		temp = (const struct checkout_helper__item_result *)line;
+		assert(temp->item_error_class != IEC__NO_RESULT);
 		assert(temp->item_error_class != IEC__INVALID_ITEM);
 		assert(temp->helper_item_nr < hp->helper_item_count);
 		assert(temp->pc_item_nr < pc->nr);
@@ -1185,35 +1217,54 @@ static int get_helper_progress(const struct checkout *state, int child_nr,
 		memcpy(&item->item_result, line,
 		       sizeof(struct checkout_helper__item_result));
 
-		display_progress(progress, ++cnt);
-
-		item->ce->ce_flags &= ~CE_UPDATE;
-
 		debug_dump_item(item, "auto-progress");
-
-		assert(temp->helper_item_nr == hp->helper_result_count);
+		if (temp->helper_item_nr != hp->helper_result_count)
+			BUG("did not receive contiguous, in-order item results");
 		hp->helper_result_count++;
 
-		if (state->refresh_cache)
-			if (update_cache_entry_for_item(state, item))
-				err = 1;
+		parallel_checkout__update_cache_entry(state, item);
+
+		if (item->item_result.item_error_class == IEC__OK) {
+			/*
+			 * Only if everything succeeded do we claim that we've
+			 * updated the item and advance the progress meter.
+			 * For failures, we let the sequential loop decide whether
+			 * to retry and how/when to advance the progress meter.
+			 */
+			display_progress(progress, ++cnt);
+			item->ce->ce_flags &= ~CE_UPDATE;
+		}
 	}
 
-	if (hp->helper_result_count == hp->helper_item_count)
-		hp->helper_finished_or_dead = 1;
-
-//	trace2_printf("progress[%d]: total=%d, (%d .. %d) err=%d",
-//		      child_nr,
-//		      hp->helper_item_count,
-//		      begin, hp->helper_result_count, err);
-
 	*result_cnt = cnt;
+	return 0;
+}
 
-	return err;
+static int child_is_finished(int child_nr)
+{
+	struct helper_process *hp = helper_pool.array[child_nr];
+
+	if (hp->helper_is_dead_to_us)
+		return 1;
+	if (hp->helper_result_count == hp->helper_item_count)
+		return 1;
+
+	return 0;
 }
 
 /*
  * Poll for progress and item results from all of the helpers.
+ *
+ * This spins until we have results for all items from all helpers.
+ *
+ * The assumption is that we sent one big batch to each helper at
+ * the start because we believe that each helper will probably take
+ * about the same amount of time on their portion.  Specifically,
+ * our caller is not attempting to chunk smaller batches to each
+ * helper in an attempt to send subsequent batches to helpers that
+ * finish early.
+ *
+ * Returns 1 if there was a packet IO failure.
  */
 int parallel_checkout__auto_progress(const struct checkout *state,
 				     struct progress *progress,
@@ -1221,31 +1272,30 @@ int parallel_checkout__auto_progress(const struct checkout *state,
 {
 	int child_nr;
 	int err = 0;
-	int nr_children_still_working = helper_pool.nr;
+	int nr_children_still_working = 0;
 
-	trace2_region_enter("pcheckout", "auto-progress", NULL);
+	// TODO assert that helpers were started with --automatic
+
+	trace2_region_enter("pcheckout", "auto_progress/batch", NULL);
 
 	sigchain_push(SIGPIPE, SIG_IGN);
 
-	while (nr_children_still_working) {
+	do {
+		nr_children_still_working = helper_pool.nr;
+
 		for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
-			struct helper_process *hp = helper_pool.array[child_nr];
-
-			if (hp->helper_finished_or_dead)
-				continue;
-		
-			if (get_helper_progress(state, child_nr,
-						progress, result_cnt))
-				err = 1;
-
-			if (hp->helper_finished_or_dead)
+			if (child_is_finished(child_nr))
 				nr_children_still_working--;
+			else
+				err |= get_helper_progress(state, child_nr,
+							   progress,
+							   result_cnt);
 		}
-	}
+	} while (nr_children_still_working);
 
 	sigchain_pop(SIGPIPE);
 
-	trace2_region_leave("pcheckout", "auto-progress", NULL);
+	trace2_region_leave("pcheckout", "auto_progress/batch", NULL);
 
 	return err;
 }

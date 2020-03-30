@@ -524,8 +524,10 @@ int checkout_entry(struct cache_entry *ce, const struct checkout *state,
 	if (nr_checkouts)
 		(*nr_checkouts)++;
 
+#if 0
 	if (state->parallel_checkout && ce->parallel_checkout_item)
 		return parallel_checkout__write_entry(state, ce);
+#endif
 
 	return write_entry(ce, path.buf, state, 0);
 }
