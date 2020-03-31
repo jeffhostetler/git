@@ -71,6 +71,32 @@ int is_eligible_for_parallel_checkout(const struct conv_attrs *ca)
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
 
+enum helper_spread_model {
+	/*
+	 * Spread the parallel-eligible items "horizontally" across
+	 * all of the helper processes.  For example, if we have h=10
+	 * helpers, helper[k] will receive {k, k+10, k+20, ...}.
+	 *
+	 * This should help spread the work of preloading the first h
+	 * blobs from the ODB as quickly as possible and should help
+	 * when sequentially populating the working directory.
+	 */
+	HSM__HORIZONTAL = 0,
+
+	/*
+	 * Spread the parallel-eligible items "vertically" across all
+	 * of the helper processes.  This is the normal way to slice
+	 * the array of items.
+	 *
+	 * This may help reduce kernel lock contention on individual
+	 * directories when populating items in a fully-parallel fashion
+	 * since helpers should be in different parts of the working
+	 * directory and (usually) not competing to add files to the
+	 * same sub-directory.
+	 */
+	HSM__VERTICAL,
+};
+
 static int nr_helper_processes_wanted = 1;
 static int nr_writer_threads_per_helper_process_wanted = 1;
 static int preload_queue_size = 5;
@@ -623,20 +649,6 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
 ///////////////////////////////////////////////////////////////////
 
 /*
- * Spread the items "horizontally" across all of the helpers
- * "horizontally" so that they will each have some of the first blobs
- * that we need (during our sequential iteration thru the index).
- *
- * Use a simple `j mod nr_helpers` method to assign items to
- * helper processes.  This blindly spreads the work uniformly across
- * the pool without regard to blob size or ODB-storage location.
- *
- * TODO A future effort might try to distribute by blob size, by
- * packfile locality, or some other criteria if we find that the
- * foreground process (when running in "sync mode") is waiting for
- * blobs during its in-order traversal of the index to populate the
- * work tree.
- *
  * To helper[k] we send:
  *     command=queue<LF>
  *     <binary data for item>
@@ -646,16 +658,13 @@ static int send_cmd__sync_mget_items(struct parallel_checkout *pc,
  *
  * Where each record looks like:
  *     <fixed-fields>[<encoding>]<path>
- *
- * If we get any errors while seeding the helpers with work, just stop
- * the parallel checkout and let the caller do a normal sequential
- * checkout.  Afterall, none of the children have actually done
- * anything to the worktree yet.
  */
-static int send_items_to_helpers(struct parallel_checkout *pc)
+static int send_items_to_helpers(struct parallel_checkout *pc,
+				 enum helper_spread_model hsm)
 {
 	int child_nr;
 	int pc_item_nr;
+	int nr, k;
 	int err = 0;
 
 	trace2_region_enter("pcheckout", "send_items", NULL);
@@ -668,23 +677,40 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 		struct child_process *process = &hp->subprocess.process;
 
 		if (packet_write_fmt_gently(process->in, "command=queue\n")) {
+			hp->helper_is_dead_to_us = 1;
 			err = 1;
 			goto done;
 		}
 	}
 
-	// TODO when in auto-progress mode, we could spread them
-	// vertically rather than horizontally and maybe avoid
-	// directory locks in the kernel.
-
 	/*
 	 * Distribute the array of items to the helpers as part of
 	 * the queue command that we've opened.
 	 */
-	for (pc_item_nr = 0; pc_item_nr < pc->nr; pc_item_nr++) {
-		int child_nr = pc_item_nr % helper_pool.nr;
+	switch (hsm) {
+	case HSM__HORIZONTAL:
+		for (pc_item_nr = 0; pc_item_nr < pc->nr; pc_item_nr++) {
+			child_nr = pc_item_nr % helper_pool.nr;
 
-		send__queue_item_record(pc, pc_item_nr, child_nr);
+			send__queue_item_record(pc, pc_item_nr, child_nr);
+		}
+		break;
+
+	case HSM__VERTICAL:
+		pc_item_nr = 0;
+		nr = DIV_ROUND_UP(pc->nr, helper_pool.nr);
+		for (child_nr = 0; child_nr < helper_pool.nr; child_nr++) {
+			for (k = 0;
+			     pc_item_nr < pc->nr && k < nr;
+			     pc_item_nr++, k++) {
+				send__queue_item_record(pc, pc_item_nr, child_nr);
+			}
+		}
+		break;
+
+	default:
+		BUG("unknown helper_spread_model %d", (int)hsm);
+		break;
 	}
 
 	/*
@@ -695,6 +721,7 @@ static int send_items_to_helpers(struct parallel_checkout *pc)
 		struct child_process *process = &hp->subprocess.process;
 
 		if (packet_flush_gently(process->in)) {
+			hp->helper_is_dead_to_us = 1;
 			err = 1;
 			goto done;
 		}
@@ -920,7 +947,7 @@ void setup_parallel_checkout(struct checkout *state,
 	}
 
 	sigchain_push(SIGPIPE, SIG_IGN);
-	err = send_items_to_helpers(pc);
+	err = send_items_to_helpers(pc, HSM__VERTICAL);
 	sigchain_pop(SIGPIPE);
 
 	if (err) {
