@@ -71,6 +71,7 @@ int core_sparse_checkout_cone;
 int core_parallel_checkout;
 int core_parallel_checkout_threshold = DEFAULT_PARALLEL_CHECKOUT_THRESHOLD;
 int core_parallel_checkout_helpers;
+int core_parallel_checkout_writers = DEFAULT_PARALLEL_CHECKOUT_WRITERS;
 int merge_log_config = -1;
 int precomposed_unicode = -1; /* see probe_utf8_pathname_composition() */
 unsigned long pack_size_limit_cfg;
