@@ -646,3 +646,8 @@ core.parallelCheckoutHelpers::
 core.parallelCheckoutWriters::
 	The number of writer threads to create within each `checkout--helper`
 	process.  Defaults to 1.
+
+core.parallelCheckoutPreload::
+	The number of blobs to preload into memory in each `checkout--helper`
+	process.  Increasing this and the number of writer threads may allow
+	better concurrency within each helper process.  Defaults to 10.
