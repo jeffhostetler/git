@@ -980,6 +980,9 @@ extern int core_parallel_checkout_helpers;
 #define DEFAULT_PARALLEL_CHECKOUT_WRITERS 1
 extern int core_parallel_checkout_writers;
 
+#define DEFAULT_PARALLEL_CHECKOUT_PRELOAD 10
+extern int core_parallel_checkout_preload;
+
 /*
  * Include broken refs in all ref iterations, which will
  * generally choke dangerous operations rather than letting
