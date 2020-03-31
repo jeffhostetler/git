@@ -642,3 +642,7 @@ core.parallelCheckoutHelpers::
 	The number of background `checkout--helper` processes to create.
 	Defaults to a reasonable number based upon the number of CPUs
 	when unset or set to 0.
+
+core.parallelCheckoutWriters::
+	The number of writer threads to create within each `checkout--helper`
+	process.  Defaults to 1.
