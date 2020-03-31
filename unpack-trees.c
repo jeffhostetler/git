@@ -1802,10 +1802,14 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 		}
 	}
 
+	trace2_region_enter("unpack_trees", "check_updates", NULL);
 	ret = check_updates(o) ? (-2) : 0;
+	trace2_region_leave("unpack_trees", "check_updates", NULL);
+
 	if (o->dst_index) {
 		move_index_extensions(&o->result, o->src_index);
 		if (!ret) {
+			trace2_region_enter("unpack_trees", "cache_tree", NULL);
 			if (git_env_bool("GIT_TEST_CHECK_CACHE_TREE", 0))
 				cache_tree_verify(the_repository, &o->result);
 			if (!o->result.cache_tree)
@@ -1814,6 +1818,7 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 				cache_tree_update(&o->result,
 						  WRITE_TREE_SILENT |
 						  WRITE_TREE_REPAIR);
+			trace2_region_leave("unpack_trees", "cache_tree", NULL);
 		}
 
 		o->result.updated_workdir = 1;
