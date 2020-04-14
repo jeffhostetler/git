@@ -1,0 +1,570 @@
+= Parallel Checkout Design Notes
+
+The "Parallel Checkout" feature attempts to use multiple processes and
+threads to improve the performance of checkout-related commands, such as
+`clone`, `checkout`, `reset`, `sparse-checkout`, and others.
+
+These commands have the following basic steps:
+
+* Step 1: Read the current `.git/index` into memory.
+
+* Step 2: Modify the in-memory index based upon the command (e.g.
+  `checkout` or `clone`) and temporarily mark all `cache-entries` that
+  need to be updated.
+
+* Step 3: Populate the worktree to match the new candidate index.
+   This includes iterating over all of the to-be-updated
+   `cache-entries` and deleting, creating, or overwriting the
+   associated files in the worktree.
+
+* Step 4: Write the new index to disk.
+
+Step 3 is the focus of the "parallel checkout" effort described here.
+It dominates the execution time for most of the above command types.
+
+== Classic Implementation
+
+For the purposes of discussion here, the current "classic"
+implementation of Step 3 has 3 layers:
+
+* Step 3a: `unpack-trees.c:check_updates()` contains a series of
+   single-threaded loops iterating over the `cache-entries` array.
+   The main loop in this function calls the next layer for each of the
+   to-be-updated entries.
+
+* Step 3b: `entry.c:checkout_entry()` examines the existing worktree
+   for file conflicts, collisions, and unsaved changes.  It creates
+   and deletes directories as necessary.  It calls the next layer for
+   each file to be created.
+   
+* Step 3c: `entry.c:write_entry()` loads the blob into memory (unzip
+   and de-deltafy), smudges it if necessary, creates the file in the
+   worktree, writes the smudged contents, calls `fstat()` or
+   `lstat()`, and updates the `cache-entry`.
+
+== Rejected Multi-Threaded Solution
+
+The "simple" solution of just spreading the set of to-be-updated
+`cache-entries` across multiple threads is not currently possible.
+All of the problems identified in <<Appendix-A>> and <<Appendix-B>>
+would need to be addressed before this could be successful.
+
+It is unclear if the additional locking overhead and complexity
+would result in any performance gains.  So this approach was rejected.
+
+== Multi-Process Solution
+
+Parallel checkout alters Step 3 to use multiple `checkout--helper`
+background processes to distribute the work.  These long-running
+processes are controlled by the foreground Git command using the
+existing sub-process mechanism.
+
+=== Overview
+
+Parallelization is based upon the following higher-level concepts:
+
+. ODB threading issues <<Appendix-B>> are eliminated by using
+  multiple background processes that each access the ODB in a
+  single-threaded manner.
+
+. A sequential iteration of the `cache_entries[]` determines
+  the set of "parallel-eligible" files.
+
+  .. Per-file smudge parameters are computed to avoid the attribute
+     stack issues described in A5.
+
+  .. Only files that have simple or no smudging requirements are
+     considered to be eligible.  File that require an external
+     filter or long-running filter process are considered not-eligible.
+     This lets us avoid A6 and A7.
+
+  .. These eligible `cache_entries` are added to a
+     `parallel_checkout_items[]` to simplify partitioning
+     and dispatching to helper processes.
+
+     ... Non-eligible files are handled sequentially using
+         the classic implementation.
+
+. Each `checkout--helper` process is assigned a set of eligible
+  files to be updated.
+
+  .. Each helper is given the `OID`, `pathname`, and smudging
+     parameters needed to create each assigned file in the worktree.
+
+     ... Each helper is able to fetch each blob, smudge them, and
+         write them to the worktree without needing to access the
+         on-disk index.
++
+This is necessary since the foreground process does not write the
+new index to disk until Step 4.  It also avoids `index.lock` contention
+issues between the foreground process and multiple helper processes.
+
+  .. Each helper directly writes files to the worktree.
++
+It can do this because it has the blob in-memory and knows the
+smudging parameters.
++
+This is unlike the delayed/queued mechanism (LFS) which returns the
+blob content to the foreground process for smudging and writing to disk.
+
+  .. Each helper calls `lstat()` or `fstat()` to get the resulting
+     `struct stat` data for each file and sends it to the
+     foreground process, so that the foreground process can update the
+     in-memory index as if it had written the file.
++     
+This avoids a possibly expensive `lstat()` in the foreground process
+(I'm looking at you, Windows) and prevents the helper processes from
+having to update the on-disk index.
+
+  .. Each helper returns error status for each file to allow the
+     foreground process to handle it in the proper context.
+
+. Each `checkout--helper` process is multi-threaded forming several
+  producer-consumer queues.
+
+  .. A *command-and-control thread* to talk with the foreground command,
+     receive the set of files, and return `struct stat`, error, and
+     progress data.
+
+  .. A *blob preload thread* to sequentially fetch blobs from the ODB
+     into a queue.  The size of the preload queue is configurable and
+     allows the 1 or more blobs to be assembled in memory before they
+     are needed.
+
+     ... Preloading can also optionally smudge the queued
+         blobs so that they are ready to be written.
+
+     ... File writing may be synchronized by the foreground process
+         as in the classic algorithm, but this thread allows the
+         blob to be ready in memory in advance of that.
+
+  .. 1 or more *writer threads* to create files in the worktree using
+     the preloaded blobs.
+
+     ... Writer threads also smudge the queued blobs if the preload
+         thread did not do so.
+
+. Files that raised an error in a `checkout--helper` are retried by the
+  foreground process when appropriate since the foreground process has
+  more context.  This allows for case-insensitive collision reporting
+  during clone, for example.
+
+=== Parallel Checkout Modes
+
+Parallel Checkout can operate in either `synchronous` or `asynchronous` mode
+depending on the type of the foreground command.
+
+==== Synchronous Mode
+
+Synchronous mode is a minimal first step at parallelizing checkout
+and tries to maintain existing classic mode semantics as much
+as possible.
+
+Its main advantage is that it distributes blob loading (de-delta
+and unzip) across multiple processes without requiring any changes
+to the ODB code.
+
+* `checkout--helper` instances each receive their file assignments of
+  parallel-eligible files.  Files are assigned in "horizontal"
+  (round-robin) fashion so that each helper has every _nth_ file in
+  the `parallel_checkout_items[]`.
+
+* The helpers begin asynchronously and sequentially preloading blobs
+  to fill their preload queue.
+
+* The helpers have a single "writer thread" and it waits for an
+  explicit `sync_write` command from the foreground process before
+  writing the next blob to the worktree.
+
+* `lstat()` data and error status is returned to the foreground
+  process to complete the synchronous request.
+
+* The foreground process uses a slightly modified version of the
+  classic algorithm where files are created one at a time in Step 3c.
+
+  ** It iterates over the full set of files to be updated.  Directly
+     handling the non-eligible ones and sending `sync_write` requests
+     to the appropriate helper process for the others.
+
+     *** This effectively iterates over the _n_ helpers because of the
+          round-robin assignment.  This improves concurrency since the
+          _n_ helpers should have already preloaded the next _n_ needed
+          blobs.
+
+     *** The foreground process `sync_write` request should only be
+         blocked for the duration actual file write into the worktree,
+         since the blob should already be preloaded and smudged.
+
+     *** However, it does mean that if the current helper is writing
+         an extremely large file, the foreground process will be
+         blocked for the duration.
+
+         **** This prevents writer threads in other helpers from
+              working because they are waiting for a `sync_write`
+              request.
+
+         **** [TODO] It might be possible to relax this and
+              interleave these `sync_write` requests.
+              See <<Appendix-F-F1>>.
+
+     *** This iteration mechanism preserves the order of operations
+         WRT the worktree and the sequence of file creations.
+
+     *** All directory creation and deletion, file deletion, and
+         collision detection is handled by the foreground process as
+         in the classic algorithm.
+
+This mode is appropriate for all commands that build upon
+`unpack-trees.c:check_updates()`, since the net effect is that
+blob loading and file writing is moved out-of-proc; everything
+else is handled by the foreground process and in the classic
+implementation sequencing.
+
+==== Asynchronous Mode
+
+Asynchronous mode attempts to fully parallelize checkout with some
+slight semantic differences.  It replaces the classic and synchronous
+mode algorithms completely and tries to create files as quickly as
+possible.
+
+In this mode:
+
+* `checkout-helper` instances receive a "vertical" set of file assignments
+  by dividing the `parallel_checkout_items[]` into _n_ contiguous chunks.
++
+This will keep helpers in their own portion of the worktree and (hopefully)
+avoid filesystem contention on individual directories.
+
+* The helpers begin asynchronously and sequentially preloading blobs
+  to fill their preload queue (as before).
+
+* The helpers have 1 or more (_m_) writer threads that compete for preloaded
+  blobs and write them to the worktree as soon as possible.
+
+  ** The helpers are responsible for creating worktree directories as necessary.
+
+  ** The helpers will not overwrite an existing file.
+
+  ** If a file is successfully created in the worktree, `lstat()` data  is
+     collected for each file for later reporting to the foreground process.
+
+* The foreground process uses a polling `async_progress` request to
+  bulk collect file results and advance the on-screen progress meter.
+
+* After all helpers have completed their assignments, the foreground
+  process sequentially handles any remaining files or errors using
+  the classic mode algorithm.
+
+This mode is appropriate for commands like `clone` and `sparse-checkout set`
+where the worktree is primarily being populated for the first time
+rather than a branch switch where most files are being overwritten.
+
+* This is because the helper refuses to overwrite an existing file, and
+  instead returns an error and expects the foreground process to handle it
+  which just wastes time.
+
+===== Asynchronous Mode Caveats
+
+* Case-insensitive collisions
+
+  ** Async mode will have upto _n * m_ threads writing files concurrently
+     and in a racy order.
++
+When there is a case-insensitive file collision in classic or sync
+mode the contents of the file on disk will match one of the file peers
+when the foreground process completes.  It is unspecified which one
+that will be, but given the sequential nature of the algorithm, the
+result is predictable.
++
+However, in async mode, all files are created in a racy order, so
+we lose the preditability.
+
+     *** One of the writer threads will win the race and report
+         success to the foreground process.  Writes to the other peer
+         files will fail because `checkout--helper` does not overwrite
+         existing files.  Errors are returned to the foreground process
+	 for each of the losing files so that it can report the
+	 collision as it does in classic mode.
+
+* File-vs-directory collisions
+
+  ** TBC...
+
+* TBC...
+
+=== Config Settings
+
+TBC...
+
+=== Test Settings
+
+TBC...
+
+[[Appendix-A]]
+== Appendix A: Classic Mode Threading Issues
+
+The following issues were discovered while investigating how to
+parallelize checkout.  There may be others.
+
+* A1: `checkout_entry()` (Step 3b) has implicit order dependencies.  A
+      sequential iteration over the array of `cache-entries` is equivalent
+      to a depth-first iteration over the directories and files listed in
+      the new in-memory index and reconciling with the worktree.  This
+      includes creating and deleting directories as necessary and handling
+      file-vs-directory collisions between the existing worktree and the
+      new in-memory index.
++
+There would be racy competition between
+multiple threads working in the same part of the worktree.
+
+* A2: `checkout_entry()` (Step 3b) handles case-insensitive collisions in
+      `clone` on Mac and Windows, such as when a Linux-created directory
+      contains both `foo` and `FOO`.
++
+The collision detection code would require a lock on the
+in-memory index to search for collision-peers (by inode) and set
+the CE_MATCHED on them.
+
+* A3: `write_entry()` (Step 3c) makes use of several subsystems (i.e. the ODB)
+      that are not thread-safe.  See <<Appendix-B>> for more details on the
+      ODB.
+
+* A4: There is a long code path between the `lstat()` in Step 3b and
+      the `open()` in Step 3c that would need a lock to avoid races with
+      other threads.
+
+* A5: The smudging rules for each file is based upon the concatentation of
+      the various `.gitattributes` file(s) in the directory path
+      containing the file.  Git maintains a stack of the open attributes
+      as the depth-first iteration walks the array of `cache-entries`.
++
+A multi-threaded solution would need to either move the stack into TLS
+data and let each worker thread manage its own stack or we would
+need to coordinate all of the worker threads to always be working in
+the same directory.
++
+Furthermore, `checkout_entry()` (Step 3b) sometimes needs to `clean`
+an existing file to ensure unsaved changes are not overwritten (in
+`ie_match_stat()`) and needs access to the attribute stack.
+
+* A6: `write_entry()` (Step 3c) might cause a file to be routed to the
+      "delayed queue", such as Git-LFS.  This is a single long-running
+      process that runs in the background to download blobs while the
+      foreground checkout continues normally for non-LFS files.  (And
+      a subsequent "retry" request completes the item.)
++
+There is only one long-running LFS process, so multi-threaded requests
+would need to be coordinated in some fashion.
+
+* A7: File smudging in `write_entry()` (Step 3c) might make use of an
+      external (one shot) `filter` or (long-running) `process filter`
+      before it can write the file to the worktree.  These filters are
+      black-boxes to Git and may have their own internal locking or
+      non-concurrent assumptions.
++
+It might not be safe to run multiple instances concurrently.
+
+[[Appendix-B]]
+== Appendix B: ODB Threading Issues
+
+During this effort, the following problems and potential problems were
+identified with the ODB.  There may be others.
+
+The ODB contains a global `packed-git` list containing the set of
+packfiles currently known to the Git process.  These will require
+detailed locking and study.
+
+This includes:
+
+* B1: The packed-git list itself which is extended as additional
+      packfiles are referenced any that may or may not have open file
+      descriptors.  A lock would be needed when extending this list.
+
+* B2: The packed-git list also contains a MRU/LRU list which defines an
+      alternate ordering of the above global list for search purposes.
+      A lock would be needed when re-ordering this list.
+
+* B3: There are config settings to limit on the number concurrently open
+      packfiles and rules for discarding/closing LRU ones.  A lock would
+      be needed when releasing resources.
+
+* B4: Likewise, there are config settings to limit size and number of
+      of active mmap regions (aka windows) on opened packfiles.
+
+* B5: Ref-counting for both packfiles and mmap regions would need to
+      be coordinated and there is a risk of deadlock when under file
+      descriptor or memory pressure with multiple threads randomly
+      accessing packfile objects.
+
+[[Appendix-C]]
+== Appendix C: Prior Efforts
+
+TBC...
+
+[[Appendix-F]]
+== Appendix F: Future Work
+
+[[Appendix-F-F1]]
+=== F1: [TODO] Interleave `sync_write`
+
+In Synchronous Mode, the foreground process sends a `sync_write` to a
+single helper and waits for the result.
+
+The writer thread in the helper writes the smudged file content to the
+worktree.  It creates a new file.  It will not overwrite an existing
+file.  After the file is closed, it returns `lstat()` data to the
+foreground process.
+
+During this time interval, other helper writer threads are idle.  (The
+blob preload threads are still active if their queues still have
+capacity.)  But the foreground process is blocked and there are no
+in-flight `sync_write` commands to the other helpers.
+
+* The main point of concern is the ordering of the file
+  creation (to preserve compatibility with the classic
+  algorithm).
+
+* If the `sync_write` request returned partial results when
+  the file was successfully created and then returned final
+  results when the file was completely written, the foreground
+  process could interleave _n_ requests without changing the
+  order of operations.
+
+* This would be most useful in cases where files are large
+  enough for the time to write the contents exceeds the
+  overhead of the extra inter-process communication (and
+  possibly threading in the foreground process).
+
+However, this might open us up to file-vs-directory and case-insensitive
+collision complications described in A1 and A2.
+
+TODO Before attempting this, measure how much time the foreground
+process is blocked waiting for `sync_write` to return and if the time
+taken by the writer thread was actually in creating, writing, closing,
+or lstat'ing the file and/or if the writer was blocked waiting for
+the blob to be loaded and smudged.
+
+[[Appendix-F-F2]]
+=== F2: [TODO] Use MIDX to sort in async mode
+
+In Asynchronous Mode, since files are populated in a racy order, the
+foreground process could sort the items in `parallel_checkout_items[]`
+based upon their packfile and offset before distributing them to the
+_n_ helper processes.  This could allow the helper processes to more
+efficiently use the virtual memory and preload blobs from the packfiles.
+
+TODO Should this only be enabled if MIDX is enabled?
+
+TODO What is the best partitioning ("vertial", "horizontal", or other)
+for assigning files to helper processes to minimize virtual memory
+contention?
+
+[[Appendix-F-F3]]
+=== F3: [TODO] Memory footprint tuning
+
+The background helpers processes are all aggressively accessing
+the ODB and may have hundreds of packfiles mmap'd.  On 64-bit
+systems, the default values for `core.packedGitWindowsSize` and
+`core.packedGitLimit` are very large.  It is quite easy for _n_
+background processes to completely consume all system memory and
+make the system unresponsive.
+
+TODO Should `parallel-checkout.c` set smaller limits for the helper
+processes (and maybe for itself too)?
+
+[[Appendix-F-F4]]
+=== F4: [TODO] Split blob preload into load and unzip phases
+
+Preliminary tests show that unzip dominates the time spent preloading
+blobs.  Can we improve the overall runtime by re-ordering some of these
+steps?
+
+When a packed object is loaded, we have to walk the delta-chain, build
+a stack of the OIDs, and then for each object in the chain: fetch it,
+unzip it, and apply the delta to the previous.
+
+We are limited to one preload thread because of locking concerns in
+the ODB.
+
+TODO Restructure the above (at the expense of using more memory)
+to fetch all of the raw objects (as stored in the ODB), unzipping them,
+and then applying the series of delta.  Only the first step would need
+the ODB lock.  The unzip operations could be done outside the lock
+(and maybe in parallel).  And finally, the de-delta step could run
+sequentially afterwards or interleaved with the unzip.
+
+TODO If successful, consider having more than one preload thread in
+asynchronous mode.
+
+[[Appendix-F-F5]]
+=== F5: [TODO] Cache existence of .gitattributes
+
+During the sequential iteration of `cache-entries` in `check_updates_loop()`,
+Git has to maintain the attribute stack.
+This is the set of "active" `.gitattribute` files that are current during
+this (effectively) depth-first walk of the tree.
+
+For example, as it iterates over the `cache_entry[]` and visits
+`a/b/c/d/e/foo.txt` it has to do binary searches on `cache_entry[]`
+for:
+
+    a/.gitattributes
+    a/b/.gitattributes
+    ...
+    a/b/c/d/e/.gitattributes
+
+The code does cache the results, so when it visits `a/b/c/d/e/foo2.txt`,
+it already has the answer.  Likewise, when it visits `a/b/x/bar.txt`,
+it pops the attribute stack for `e`, `d`, and `c`, and only has to
+lookup `a/b/x/.gitattributes`.
+
+This means that Git does a search the first time that every directory
+is visited.  For a very rarely used feature, this could save `O(d log n)`
+work.
+
+TODO Consider inserting something into a prior iteration to set a bit
+on the directory to indicate that it has a `.gitattributes` file in it.
+This would let us maintain the attribute stack without the binary searches.
+
+NOTE This needs to be in a prior iteration and not in the current
+iteration so that it can be order independent, since the repo might
+contain `a/b/c/d/e/.a.txt` that would be visited in the (sorted) index
+before `a/b/c/d/e/.gitattributes`.
+
+[[Appendix-F-F6]]
+=== F6: [TODO] Support stream smudging
+
+Currently blobs are smudged into another buffer and do not
+make use of the stream smudging mechanism.  (This was just a
+development short-cut, not an actual hard problem.)
+
+. In Synchronous Mode, this allows smudging to occur as part of the
+  preload, so that the foreground process only has to wait for the
+  pre-smudged content to be written to the worktree.
+
+. In Asynchronous Mode, writer threads do the smudging to avoid
+  slowing slowing the preload thread.
+
+TODO In Asynchronous Mode, refactor the writer thread slightly to allow
+stream smudging near the file creation and writing code.
+
+TODO In Synchronous Mode, turn off smudging in the preload thread and
+let the above refactored code handle it.
+
+[[Appendix-F-F7]]
+=== F7: [TODO] Investigate when to use Asynchronous Mode
+
+TODO Decide which commands should prefer async mode over sync mode.
+
+TBC...
+
+[[Appendix-F-F8]]
+=== F8: [TODO] Update `cache-tree` in Parallel
+
+In `unpack_trees()` after the call to `check_updates()` there is an
+optional call to `cache_tree_update()` to rebuild the `cache_tree`
+data structure.  This is very slow for some commands.
+
+In both Sync and Async Modes, it should be possible to have a thread
+in the foreground process to incrementally update the `cache_tree`
+as partial results are received from helper processes.
