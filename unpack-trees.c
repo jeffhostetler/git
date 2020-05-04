@@ -390,6 +390,37 @@ static void report_collided_checkout(struct index_state *index)
 	string_list_clear(&list, 0);
 }
 
+/*
+ * The original sequential checkout that was originally inlined
+ * within check_updates().
+ */
+static int check_updates_loop__classic(struct checkout *state,
+				       struct unpack_trees_options *o,
+				       struct progress *progress,
+				       unsigned *result_cnt)
+{
+	unsigned cnt = *result_cnt;
+	int errs = 0;
+	struct index_state *index = state->istate;
+	int i;
+
+	for (i = 0; i < index->cache_nr; i++) {
+		struct cache_entry *ce = index->cache[i];
+
+		if (ce->ce_flags & CE_UPDATE) {
+			if (ce->ce_flags & CE_WT_REMOVE)
+				BUG("both update and delete flags are set on %s",
+				    ce->name);
+			display_progress(progress, ++cnt);
+			ce->ce_flags &= ~CE_UPDATE;
+			errs |= checkout_entry(ce, state, NULL, NULL);
+		}
+	}
+
+	*result_cnt = cnt;
+	return errs;
+}
+
 static int check_updates(struct unpack_trees_options *o,
 			 struct index_state *index)
 {
@@ -462,18 +493,7 @@ static int check_updates(struct unpack_trees_options *o,
 	}
 
 	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
-	for (i = 0; i < index->cache_nr; i++) {
-		struct cache_entry *ce = index->cache[i];
-
-		if (ce->ce_flags & CE_UPDATE) {
-			if (ce->ce_flags & CE_WT_REMOVE)
-				BUG("both update and delete flags are set on %s",
-				    ce->name);
-			display_progress(progress, ++cnt);
-			ce->ce_flags &= ~CE_UPDATE;
-			errs |= checkout_entry(ce, &state, NULL, NULL);
-		}
-	}
+	errs |= check_updates_loop__classic(&state, o, progress, &cnt);
 	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
 
 	stop_progress(&progress);
