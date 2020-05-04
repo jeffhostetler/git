@@ -421,6 +421,21 @@ GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=<boolean>, when true (which is
 the default when running tests), errors out when an abbreviated option
 is used.
 
+GIT_TEST_PARALLEL_CHECKOUT=<n>, enables parallel-checkout when set
+and non-zero.  This overrides the value of 'core.parallelCheckout'.
+
+GIT_TEST_PARALLEL_CHECKOUT_MODE=<string>, forces parallel-checkout use
+either "sync" or "async" mode and override the normal command-based
+detection.  This is to allow a/b testing when comparing performance
+times.
+
+GIT_TEST_PARALLEL_CHECKOUT_THRESHOLD=<n>, sets parallel-checkout
+threshold.  This overrides the value of 'core.parallelCheckoutThreshold'.
+
+GIT_TEST_CHECKOUT_HELPER_VERBOSE=<n>, when non-zero enables verbose
+Trace2 logging in checkout--helper.
+
+
 Naming Tests
 ------------
 
