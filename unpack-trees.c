@@ -460,6 +460,8 @@ static int check_updates(struct unpack_trees_options *o,
 					   to_fetch.oid, to_fetch.nr);
 		oid_array_clear(&to_fetch);
 	}
+
+	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
 	for (i = 0; i < index->cache_nr; i++) {
 		struct cache_entry *ce = index->cache[i];
 
@@ -472,6 +474,8 @@ static int check_updates(struct unpack_trees_options *o,
 			errs |= checkout_entry(ce, &state, NULL, NULL);
 		}
 	}
+	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
+
 	stop_progress(&progress);
 	errs |= finish_delayed_checkout(&state, NULL);
 	git_attr_set_direction(GIT_ATTR_CHECKIN);
@@ -1716,10 +1720,14 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 		}
 	}
 
+	trace2_region_enter("unpack_trees", "check_updates", NULL);
 	ret = check_updates(o, &o->result) ? (-2) : 0;
+	trace2_region_leave("unpack_trees", "check_updates", NULL);
+
 	if (o->dst_index) {
 		move_index_extensions(&o->result, o->src_index);
 		if (!ret) {
+			trace2_region_enter("unpack_trees", "cache_tree", NULL);
 			if (git_env_bool("GIT_TEST_CHECK_CACHE_TREE", 0))
 				cache_tree_verify(the_repository, &o->result);
 			if (!o->result.cache_tree)
@@ -1728,6 +1736,7 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 				cache_tree_update(&o->result,
 						  WRITE_TREE_SILENT |
 						  WRITE_TREE_REPAIR);
+			trace2_region_leave("unpack_trees", "cache_tree", NULL);
 		}
 
 		o->result.updated_workdir = 1;
@@ -1778,6 +1787,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 		BUG("update_sparsity() called wrong");
 
 	trace_performance_enter();
+	trace2_region_enter("unpack_trees", "update_sparsity", NULL);
 
 	/* If we weren't given patterns, use the recorded ones */
 	if (!o->pl) {
@@ -1793,6 +1803,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 	mark_new_skip_worktree(o->pl, o->src_index, 0,
 			       CE_NEW_SKIP_WORKTREE, o->verbose_update);
 
+	trace2_region_enter("unpack_trees", "update_sparsity/loop", NULL);
 	/* Then loop over entries and update/remove as needed */
 	ret = UPDATE_SPARSITY_SUCCESS;
 	for (i = 0; i < o->src_index->cache_nr; i++) {
@@ -1809,6 +1820,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 		if (apply_sparse_checkout(o->src_index, ce, o))
 			ret = UPDATE_SPARSITY_WARNINGS;
 	}
+	trace2_region_leave("unpack_trees", "update_sparsity/loop", NULL);
 
 skip_sparse_checkout:
 	if (check_updates(o, o->src_index))
@@ -1818,6 +1830,7 @@ skip_sparse_checkout:
 	o->show_all_errors = old_show_all_errors;
 	if (free_pattern_list)
 		clear_pattern_list(&pl);
+	trace2_region_leave("unpack_trees", "update_sparsity", NULL);
 	trace_performance_leave("update_sparsity");
 	return ret;
 }
