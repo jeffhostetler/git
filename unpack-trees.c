@@ -460,6 +460,8 @@ static int check_updates(struct unpack_trees_options *o,
 					   to_fetch.oid, to_fetch.nr);
 		oid_array_clear(&to_fetch);
 	}
+
+	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
 	for (i = 0; i < index->cache_nr; i++) {
 		struct cache_entry *ce = index->cache[i];
 
@@ -472,6 +474,8 @@ static int check_updates(struct unpack_trees_options *o,
 			errs |= checkout_entry(ce, &state, NULL, NULL);
 		}
 	}
+	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
+
 	stop_progress(&progress);
 	errs |= finish_delayed_checkout(&state, NULL);
 	git_attr_set_direction(GIT_ATTR_CHECKIN);
