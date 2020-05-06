@@ -16,6 +16,7 @@
 #include "fsmonitor.h"
 #include "object-store.h"
 #include "promisor-remote.h"
+#include "parallel-checkout.h"
 
 /*
  * Error messages expected by scripts out of plumbing commands such as
@@ -421,6 +422,121 @@ static int check_updates_loop__classic(struct checkout *state,
 	return errs;
 }
 
+/*
+ * Drive the checkout loop using the original sequential method, but
+ * modified to let the helper processes load blobs in the background
+ * in parallel, but synchronously write the file contents.
+ *
+ * Whether this is faster than the classic method probably
+ * depends on the data shape in the packfiles (such as delta-chain
+ * length and etc).
+ */
+static int check_updates_loop__synchronous(
+	struct checkout *state,
+	struct unpack_trees_options *o,
+	struct progress *progress,
+	unsigned *result_cnt)
+{
+	int errs;
+
+	errs = check_updates_loop__classic(state, o, progress, result_cnt);
+
+	return errs;
+}
+
+static int check_updates_loop__asynchronous(
+	struct checkout *state,
+	struct unpack_trees_options *o,
+	struct progress *progress,
+	unsigned *result_cnt)
+{
+	unsigned cnt = *result_cnt;
+	int errs = 0;
+	struct index_state *index = state->istate;
+	int i;
+
+	assert(is_parallel_checkout_mode(state, PCM__ASYNCHRONOUS));
+
+	/*
+	 * Step 1: Poll for progress and reap results for each
+	 * cache-entry.
+	 *
+	 * Since we started the helper processes in asynchronous mode,
+	 * they have already started populating the files in the
+	 * working directory.  Our job here is to just collect
+	 * progress information and wait for them to finish.
+	 */
+	errs |= parallel_checkout__async__progress(state, progress, &cnt);
+
+	/*
+	 * Step 2: sequentially handle the cache-entries that were NOT
+	 * eligible for parallel checkout -OR- eligible entries that had
+	 * retryable errors.  This uses the original checkout_entry(),
+	 * so it may spawn any necessary custom smudging, such as LFS.
+	 *
+	 * This also lets the clone-collision reporting work.
+	 *
+	 * We also use this loop to print hard errors from the helpers
+	 * (so that they are in cache-entry order).
+	 */
+	trace2_region_enter("pcheckout", "async/remainder", NULL);
+	for (i = 0; i < index->cache_nr; i++) {
+		struct cache_entry *ce = index->cache[i];
+
+		if (ce->parallel_checkout_item)
+			parallel_checkout__async__classify_result(state, ce,
+								  progress,
+								  &cnt);
+
+		if (ce->ce_flags & CE_UPDATE) {
+			if (ce->ce_flags & CE_WT_REMOVE)
+				BUG("both update and delete flags are set on %s",
+				    ce->name);
+			display_progress(progress, ++cnt);
+			ce->ce_flags &= ~CE_UPDATE;
+			errs |= checkout_entry(ce, state, NULL, NULL);
+		}
+	}
+	trace2_region_leave("pcheckout", "async/remainder", NULL);
+
+	*result_cnt = cnt;
+
+	return errs;
+}
+
+static int check_updates_loop(struct checkout *state,
+			      struct unpack_trees_options *o,
+			      struct progress *progress,
+			      unsigned *result_cnt)
+{
+	enum parallel_checkout_mode pcm;
+	int errs;
+
+	pcm = setup_parallel_checkout(state, o);
+
+	switch (pcm) {
+	default: /* silently fall back to the classic sequential code */
+	case PCM__NONE:
+		errs = check_updates_loop__classic(state, o, progress,
+						   result_cnt);
+		break;
+
+	case PCM__SYNCHRONOUS:
+		errs = check_updates_loop__synchronous(state, o, progress,
+						       result_cnt);
+		finish_parallel_checkout(state);
+		break;
+
+	case PCM__ASYNCHRONOUS:
+		errs = check_updates_loop__asynchronous(state, o, progress,
+							result_cnt);
+		finish_parallel_checkout(state);
+		break;
+	}
+
+	return errs;
+}
+
 static int check_updates(struct unpack_trees_options *o,
 			 struct index_state *index)
 {
@@ -493,7 +609,7 @@ static int check_updates(struct unpack_trees_options *o,
 	}
 
 	trace2_region_enter("unpack_trees", "check_updates_loop", NULL);
-	errs |= check_updates_loop__classic(&state, o, progress, &cnt);
+	errs |= check_updates_loop(&state, o, progress, &cnt);
 	trace2_region_leave("unpack_trees", "check_updates_loop", NULL);
 
 	stop_progress(&progress);
