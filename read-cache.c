@@ -1840,6 +1840,7 @@ static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 	ce->ce_namelen = len;
 	ce->index = 0;
 	hashcpy(ce->oid.hash, ondisk->data);
+	ce->parallel_checkout_item = NULL;
 	memcpy(ce->name, name, len);
 	ce->name[len] = '\0';
 

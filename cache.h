@@ -148,6 +148,7 @@ struct cache_entry {
 	unsigned int ce_namelen;
 	unsigned int index;	/* for link extension */
 	struct object_id oid;
+	void *parallel_checkout_item; /* we do not own this */
 	char name[FLEX_ARRAY]; /* more */
 };
 
@@ -963,6 +964,10 @@ extern const char *core_fsmonitor;
 extern int core_apply_sparse_checkout;
 extern int core_sparse_checkout_cone;
 
+/*
+ * Set from core.parallelCheckout.
+ * See also GIT_TEST_PARALLEL_CHECKOUT.
+ */
 extern int core_parallel_checkout;
 
 /*
@@ -973,6 +978,10 @@ extern int core_parallel_checkout;
  */
 #define DEFAULT_PARALLEL_CHECKOUT_THRESHOLD 1000
 
+/*
+ * Set from core.parallelCheckoutThreshold.
+ * See also GIT_TEST_PARALLEL_CHECKOUT_THRESHOLD.
+ */
 extern int core_parallel_checkout_threshold;
 
 extern int core_parallel_checkout_helpers;
@@ -1719,6 +1728,7 @@ struct checkout {
 	int base_dir_len;
 	struct delayed_checkout *delayed_checkout;
 	struct checkout_metadata meta;
+	struct parallel_checkout *parallel_checkout;
 	unsigned force:1,
 		 quiet:1,
 		 not_new:1,

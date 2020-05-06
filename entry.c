@@ -6,6 +6,7 @@
 #include "submodule.h"
 #include "progress.h"
 #include "fsmonitor.h"
+#include "parallel-checkout.h"
 
 static void create_directories(const char *path, int path_len,
 			       const struct checkout *state)
@@ -425,6 +426,33 @@ static void mark_colliding_entries(const struct checkout *state,
 		if ((trust_ino && !match_stat_data(&dup->ce_stat_data, st)) ||
 		    (!trust_ino && !fspathcmp(ce->name, dup->name))) {
 			dup->ce_flags |= CE_MATCHED;
+			return;
+		}
+	}
+
+	/*
+	 * When async parallel-checkout is enabled, the files are
+	 * populated in a racy order and so the other side of the
+	 * collision may appear after the given cache-entry in the
+	 * array.
+	 */
+	if (!is_parallel_checkout_mode(state, PCM__ASYNCHRONOUS))
+		return;
+
+	for (i += 1; i < state->istate->cache_nr; i++) {
+		struct cache_entry *dup = state->istate->cache[i];
+
+		if (!dup->parallel_checkout_item)
+			continue;
+		if (!parallel_checkout__created_file(dup))
+			continue;
+
+		if (dup->ce_flags & (CE_MATCHED | CE_VALID | CE_SKIP_WORKTREE))
+			continue;
+
+		if ((trust_ino && !match_stat_data(&dup->ce_stat_data, st)) ||
+		    (!trust_ino && !fspathcmp(ce->name, dup->name))) {
+			dup->ce_flags |= CE_MATCHED;
 			break;
 		}
 	}
@@ -522,6 +550,22 @@ int checkout_entry(struct cache_entry *ce, const struct checkout *state,
 	create_directories(path.buf, path.len, state);
 	if (nr_checkouts)
 		(*nr_checkouts)++;
+
+	/*
+	 * If this file is parallel-eligible and we are in sync mode,
+	 * let the checkout--helper try to populate the item in the
+	 * worktree.  By now it should have the blob in memory and be
+	 * ready to smudge and write it.
+	 *
+	 * (In async mode, we only get here for parallel-eligible
+	 * items as a fallback -- when the helper process has already
+	 * tried and gotten an error.  And we don't want to re-send
+	 * the request to the helper.)
+	 */
+	if (ce->parallel_checkout_item &&
+	    is_parallel_checkout_mode(state, PCM__SYNCHRONOUS))
+		return parallel_checkout__sync__write_entry(state, ce);
+
 	return write_entry(ce, path.buf, state, 0);
 }
 
