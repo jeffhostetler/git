@@ -1938,6 +1938,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 		BUG("update_sparsity() called wrong");
 
 	trace_performance_enter();
+	trace2_region_enter("unpack_trees", "update_sparsity", NULL);
 
 	/* If we weren't given patterns, use the recorded ones */
 	if (!o->pl) {
@@ -1953,6 +1954,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 	mark_new_skip_worktree(o->pl, o->src_index, 0,
 			       CE_NEW_SKIP_WORKTREE, o->verbose_update);
 
+	trace2_region_enter("unpack_trees", "update_sparsity/loop", NULL);
 	/* Then loop over entries and update/remove as needed */
 	ret = UPDATE_SPARSITY_SUCCESS;
 	empty_worktree = 1;
@@ -1973,6 +1975,7 @@ enum update_sparsity_result update_sparsity(struct unpack_trees_options *o)
 		if (!ce_skip_worktree(ce))
 			empty_worktree = 0;
 	}
+	trace2_region_leave("unpack_trees", "update_sparsity/loop", NULL);
 
 	/*
 	 * Sparse checkout is meant to narrow down checkout area
@@ -1995,6 +1998,7 @@ done:
 	o->show_all_errors = old_show_all_errors;
 	if (free_pattern_list)
 		clear_pattern_list(&pl);
+	trace2_region_leave("unpack_trees", "update_sparsity", NULL);
 	trace_performance_leave("update_sparsity");
 	return ret;
 }
