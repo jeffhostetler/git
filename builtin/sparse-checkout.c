@@ -214,12 +214,16 @@ static int write_patterns_and_update(struct pattern_list *pl)
 	fd = hold_lock_file_for_update(&lk, sparse_filename,
 				      LOCK_DIE_ON_ERROR);
 
+	trace2_region_enter("sparse-checkout", "update_wd/main", NULL);
 	result = update_working_directory(pl);
+	trace2_region_leave("sparse-checkout", "update_wd/main", NULL);
 	if (result) {
+		trace2_region_enter("sparse-checkout", "update_wd/rollback", NULL);
 		rollback_lock_file(&lk);
 		free(sparse_filename);
 		clear_pattern_list(pl);
 		update_working_directory(NULL);
+		trace2_region_leave("sparse-checkout", "update_wd/rollback", NULL);
 		return result;
 	}
 
