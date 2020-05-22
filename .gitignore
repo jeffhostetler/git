@@ -115,6 +115,7 @@
 /git-pack-objects
 /git-pack-refs
 /git-parse-remote
+/git-parallel-checkout-helper
 /git-patch-id
 /git-prune
 /git-prune-packed
