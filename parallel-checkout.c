@@ -903,6 +903,7 @@ enum parallel_checkout_mode setup_parallel_checkout(
 		nr_eligible_files++;
 
 		item = xcalloc(1, sizeof(*item));
+		/* item->item_error_class = IEC__NO_RESULT */
 
 		item->ce = ce;
 		ce->parallel_checkout_item = item;
