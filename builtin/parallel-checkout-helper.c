@@ -117,6 +117,50 @@ static int do_protocol_handshake(void)
 	return 0;
 }
 
+/*
+ * Listen for commands from the client and dispatch them.
+ */
+static int server_loop(void)
+{
+	char *line;
+	const char *cmd;
+	int len;
+	int k;
+
+get_next_command:
+	len = packet_read_line_gently(0, NULL, &line);
+	if (len < 0 || !line)
+		return 0;
+
+	if (!skip_prefix(line, "command=", &cmd)) {
+		error("%s: invalid sequence '%s'", t2_child_name, line);
+		return 1;
+	}
+
+	for (k = 0; caps[k].name; k++) {
+		if (!strcmp(cmd, caps[k].name)) {
+			if (!caps[k].client_has) {
+				/*
+				 * The client sent a command that it didn't
+				 * claim that it understood.
+				 */
+				error("%s: invalid command '%s'",
+				      t2_child_name, line);
+				return 1;
+			}
+
+			if ((caps[k].pfn_helper_cmd)())
+				return 1;
+
+			goto get_next_command;
+		}
+	}
+
+	/* The server doesn't know about this command. */
+	error("%s: unsupported command '%s'", t2_child_name, line);
+	return 1;
+}
+
 int cmd_parallel_checkout_helper(int argc, const char **argv,
 				 const char *prefix)
 {
@@ -140,6 +184,8 @@ int cmd_parallel_checkout_helper(int argc, const char **argv,
 
 	if (do_protocol_handshake())
 		return 1;
+
+	err = server_loop();
 
 	return err;
 }
