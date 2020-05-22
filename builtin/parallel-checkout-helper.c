@@ -18,6 +18,11 @@ static const char * const helper_usage[] = {
 	NULL
 };
 
+/*
+ * The set of commands/capabilities that this sub-process
+ * server advertises and negotiates with the foreground
+ * client process.
+ */
 typedef int (fn_helper_cmd)(void);
 
 struct helper_capability {
