@@ -16,6 +16,7 @@ struct test_cmd {
 static struct test_cmd cmds[] = {
 	{ "advise", cmd__advise_if_enabled },
 	{ "bloom", cmd__bloom },
+	{ "checkout-helper", cmd__checkout_helper },
 	{ "chmtime", cmd__chmtime },
 	{ "config", cmd__config },
 	{ "ctype", cmd__ctype },
