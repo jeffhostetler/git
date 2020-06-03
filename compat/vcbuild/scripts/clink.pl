@@ -23,7 +23,7 @@ while (@ARGV) {
 	    # before any "-l*" flags.
 	    $is_debug = 1;
 	}
-	if ("$arg" =~ /^-[DIMGOZ]/) {
+	if ("$arg" =~ /^-[DEIMGOZ]/) {
 		push(@cflags, $arg);
 	} elsif ("$arg" eq "-o") {
 		my $file_out = shift @ARGV;
