@@ -1638,6 +1638,8 @@ ifdef NO_UNIX_SOCKETS
 	EXCLUDED_PROGRAMS += git-credential-cache git-credential-cache--daemon
 else
 	LIB_OBJS += unix-socket.o
+	LIB_OBJS += compat/simple-ipc/shared.o
+	LIB_OBJS += compat/simple-ipc/unix-sockets.o
 	PROGRAM_OBJS += credential-cache.o
 	PROGRAM_OBJS += credential-cache--daemon.o
 endif
