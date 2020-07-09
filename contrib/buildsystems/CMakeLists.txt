@@ -236,6 +236,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	list(APPEND compat_SOURCES unix-socket.c)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	list(APPEND compat_SOURCES compat/simple-ipc/shared.c compat/simple-ipc/win32.c)
+endif()
+
 set(EXE_EXTENSION ${CMAKE_EXECUTABLE_SUFFIX})
 
 #header checks
