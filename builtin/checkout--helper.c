@@ -73,6 +73,7 @@ static void worker_loop(struct checkout *state)
 	struct checkout_item *items = NULL;
 	size_t i, nr = 0, alloc = 0;
 
+	trace2_region_enter("checkout-helper", "read-lines", NULL);
 	while (1) {
 		int len;
 		char *line = packet_read_line(0, &len);
@@ -83,13 +84,17 @@ static void worker_loop(struct checkout *state)
 		ALLOC_GROW(items, nr + 1, alloc);
 		packet_to_ci(line, len, &items[nr++]);
 	}
+	trace2_data_intmax("checkout-helper", NULL, "read-lines", nr);
+	trace2_region_leave("checkout-helper", "read-lines", NULL);
 
+	trace2_region_enter("checkout-helper", "work", NULL);
 	for (i = 0; i < nr; ++i) {
 		struct checkout_item *ci = &items[i];
 		write_checkout_item(state, ci);
 		report_result(ci);
 		release_checkout_item_data(ci);
 	}
+	trace2_region_leave("checkout-helper", "work", NULL);
 
 	packet_flush(1);
 

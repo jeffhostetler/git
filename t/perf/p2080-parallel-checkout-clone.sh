@@ -32,14 +32,14 @@ test_perf_borrow_large_repo
 # TODO also gets added to the test.  Is there a way to get around that
 # TODO and move the cleanup outside of the timer?
 
-test_perf 'clone with sequential checkout' '
-	r_out=./r &&
-
-	git -c advice.detachedHead=false \
-	    -c checkout.workers=1 \
-		clone -- "$GIT_PERF_BORROW_REPO" $r_out &&
-	rm -rf $r_out
-'
+####test_perf 'clone with sequential checkout' '
+####	r_out=./r &&
+####
+####	git -c advice.detachedHead=false \
+####	    -c checkout.workers=1 \
+####		clone -- "$GIT_PERF_BORROW_REPO" $r_out &&
+####	rm -rf $r_out
+####'
 
 # Parallel checkout with one worker per core.
 test_perf 'clone with parallel checkout' '

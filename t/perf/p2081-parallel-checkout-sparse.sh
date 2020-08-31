@@ -38,7 +38,8 @@ test_perf_borrow_large_repo
 # in a second step.  Finally, sparse clone is disabled which causes the
 # full repo to be populated.
 
-workers='1 0'
+####workers='1 0'
+workers='0'
 
 for w in ${workers}
 do
@@ -57,12 +58,12 @@ do
 			cat $GIT_PERF_SPARSE_SET | \
 				git -C $r_out \
 				    -c checkout.workers=${w} \
-					sparse-checkout add --stdin
+					sparse-checkout add --stdin | cat
 		fi &&
 
 		git -C $r_out \
 		    -c checkout.workers=${w} \
-			sparse-checkout disable &&
+			sparse-checkout disable | cat &&
 
 		git -C $r_out ls-files | wc -l >&2 &&
 
