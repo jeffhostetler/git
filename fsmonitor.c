@@ -5,6 +5,7 @@
 #include "fsmonitor.h"
 #include "run-command.h"
 #include "strbuf.h"
+#include "trace2.h"
 
 #define INDEX_EXTENSION_VERSION1	(1)
 #define INDEX_EXTENSION_VERSION2	(2)
@@ -393,7 +394,15 @@ GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
 int fsmonitor_stop_daemon(void)
 {
 	struct strbuf answer = STRBUF_INIT;
-	int ret = ipc_send_command(git_path_fsmonitor(), "quit", &answer);
+	struct ipc_client_connect_options options
+		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
+	int ret;
+
+	options.wait_if_busy = 1;
+	options.wait_if_not_found = 0;
+
+	ret = ipc_client_send_command(git_path_fsmonitor(), &options,
+				      "quit", &answer);
 	strbuf_release(&answer);
 	return ret;
 }
@@ -401,24 +410,101 @@ int fsmonitor_stop_daemon(void)
 int fsmonitor_query_daemon(const char *since, struct strbuf *answer)
 {
 	struct strbuf command = STRBUF_INIT;
-	int ret = 0;
+	int ret = -1;
+	int fd = -1;
+	int tried_to_spawn = 0;
+	enum ipc_active_state state = IPC_STATE__OTHER_ERROR;
+	struct ipc_client_connect_options options
+		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
 
-	if (!fsmonitor_daemon_is_running()) {
-		if (fsmonitor_spawn_daemon() < 0 && !fsmonitor_daemon_is_running())
-			return error(_("failed to spawn fsmonitor daemon"));
-		sleep_millisec(50);
-	}
+	options.wait_if_busy = 1;
+	options.wait_if_not_found = 0;
+
+	trace2_region_enter("fsm_client", "query-daemon", NULL);
 
 	strbuf_addf(&command, "%ld %s", FSMONITOR_VERSION, since);
-	ret = ipc_send_command(git_path_fsmonitor(),
-				command.buf, answer);
+
+try_again:
+	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+
+	switch (state) {
+	case IPC_STATE__LISTENING:
+		ret = ipc_client_send_command_to_fd(fd, command.buf, answer);
+		close(fd);
+
+		trace2_data_intmax("fsm_client", NULL,
+				   "query-daemon/response-length", answer->len);
+
+		if (trace2_is_enabled()) {
+			static char trivial_response[3] = { '\0', '/', '\0' };
+			int trivial = !memcmp(trivial_response,
+					      &answer->buf[answer->len - 3], 3);
+			if (trivial)
+				trace2_data_intmax(
+					"fsm_client", NULL,
+					"query-daemon/trivial-response",
+					trivial);
+		}
+
+		goto done;
+
+	case IPC_STATE__NOT_LISTENING:
+		ret = error(_("query_daemon: daemon not available"));
+		goto done;
+
+	case IPC_STATE__PATH_NOT_FOUND:
+		if (tried_to_spawn)
+			goto done;
+
+		tried_to_spawn++;
+		if (fsmonitor_spawn_daemon())
+			goto done;
+
+		// TODO One could argue that if we just successfully started
+		// TODO the daemon, it can't possibly have any FS events cached
+		// TODO yet, so we'll always get a trivial answer.  But we
+		// TODO allow it in case there are other command verbs, such
+		// TODO as a startup sequence number or something.
+
+		/*
+		 * Try again, but this time give the daemon a chance to
+		 * actually create the pipe/socket.
+		 */
+		options.wait_if_not_found = 1;
+		goto try_again;
+
+	case IPC_STATE__INVALID_PATH:
+		ret = error(_("query_daemon: invalid path '%s'"),
+			    git_path_fsmonitor());
+		goto done;
+
+	case IPC_STATE__OTHER_ERROR:
+	default:
+		ret = error(_("query_daemon: unspecified error on '%s'"),
+			    git_path_fsmonitor());
+		goto done;
+	}
+
+done:
 	strbuf_release(&command);
+	trace2_region_leave("fsm_client", "query-daemon", NULL);
+
 	return ret;
+}
+
+enum ipc_active_state fsmonitor_daemon_get_active_state(void)
+{
+	return ipc_get_active_state(git_path_fsmonitor());
 }
 
 int fsmonitor_daemon_is_running(void)
 {
-	return ipc_is_active(git_path_fsmonitor());
+	// TODO Finish conversion from _is_active to _get_active_state.
+	// TODO That is, change the prototype of this function to return
+	// TODO IPC_ state so that caller can decide whether to retry or
+	// TODO just give up.
+
+	return ipc_get_active_state(git_path_fsmonitor()) == IPC_STATE__LISTENING;
 }
 
 /* Let's spin up a new server, returning when it is listening */
@@ -433,40 +519,32 @@ int fsmonitor_spawn_daemon(void)
 	const char *args[] = { "git", "fsmonitor--daemon", "--run", NULL };
 	int in = open("/dev/null", O_RDONLY);
 	int out = open("/dev/null", O_WRONLY);
-	int ret = 0;
-	pid_t pid = mingw_spawnvpe("git", args, NULL, NULL, in, out, out);
-	HANDLE process;
+	int exec_id;
+	pid_t pid;
 
-	if (pid < 0)
-		ret = error(_("could not spawn the fsmonitor daemon"));
+	/*
+	 * Try to start the daemon as a long-running process rather than as
+	 * a child (in the Trace2 sense).  Log an exec event for the startup.
+	 * We won't have an exec-result event unless fails to start or dies
+	 * quickly.
+	 */
+	exec_id = trace2_exec("git", args);
 
+	pid = mingw_spawnvpe("git", args, NULL, NULL, in, out, out);
 	close(in);
 	close(out);
 
-	process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-	if (!process)
-		return error(_("could not spawn fsmonitor--daemon"));
-
-	/* poll is_running() */
-	while (!ret && !fsmonitor_daemon_is_running()) {
-		DWORD exit_code;
-
-		if (!GetExitCodeProcess(process, &exit_code)) {
-			CloseHandle(process);
-			return error(_("could not query status of spawned "
-				       "fsmonitor--daemon"));
-		}
-
-		if (exit_code != STILL_ACTIVE) {
-			CloseHandle(process);
-			return error(_("fsmonitor--daemon --run stopped; "
-				       "exit code: %ld"), exit_code);
-		}
-
-		sleep_millisec(50);
+	if (pid < 0) {
+		trace2_exec_result(exec_id, pid);
+		return error(_("could not spawn the fsmonitor daemon"));
 	}
 
-	return ret;
+	/*
+	 * The daemon is (probably) still booting up.  We DO NOT spin/wait
+	 * for the pipe/socket to become ready.  We ASSUME that our caller
+	 * takes care of that.
+	 */
+	return 0;
 #endif
 }
 #endif
