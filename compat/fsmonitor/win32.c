@@ -1,6 +1,12 @@
 #include "cache.h"
 #include "fsmonitor.h"
 
+// TODO Long paths can be 32k WIDE CHARS, but that may expand into more
+// TODO than 32k BYTES if there are any UTF8 multi-byte sequences.
+// TODO But this is rather rare, try it with a fixed buffer size first
+// TODO and if returns 0 and error ERROR_INSUFFICIENT_BUFFER, do the
+// TODO do it again the right way.
+
 static int normalize_path(FILE_NOTIFY_INFORMATION *info, struct strbuf *normalized_path)
 {
 	/* Convert to UTF-8 */
@@ -21,6 +27,15 @@ static int normalize_path(FILE_NOTIFY_INFORMATION *info, struct strbuf *normaliz
 	return strbuf_normalize_path(normalized_path);
 }
 
+// TODO Calling TerminateThread is very unsafe.
+// TODO We should have a way to notify the thread to exit.
+//
+// TODO For example, raise the hEvent described below.  This will let
+// TODO the listener thread start shutting down without blocking the
+// TODO response to the client in `handle_client()`.   ((I don't think
+// TODO we need to call `ipc_server_stop_async()` because the IPC
+// TODO layer will do that when `handle_client()` returns `SIMPLE_IPC_QUIT`.))
+
 int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
 {
 	if (!TerminateThread(state->watcher_thread.handle, 1))
@@ -29,9 +44,92 @@ int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
 	return 0;
 }
 
+// TODO This is a thread-proc, right?
+//
+// TODO Add trace2_thread_start() and _exit()
+//
+// TODO This should not call exit(), rather goto end and returning.
+//
+// TODO The `return state` statements assume that someone is going to join
+// TODO in order to recover that info, but the caller probably already has
+// TODO the state (because it needs the pthread_id to call join).  So this
+// TODO is probably not needed.  That is, just return NULL.
+//
+// TODO Also WRT returning on a FS error (or special FSMONITOR_DAEMON_QUIT
+// TODO or negative):  This will effectively kill all in-progress responses
+// TODO 1 or more IPC clients.  It would be better to call ipc_server_stop_async()
+// TODO and then return from this thread.
+//
+// TODO We should open `dir` in OVERLAPPED mode and create an hEvent for
+// TODO shutdown and have the main loop here call `WaitForMultipleObjects`
+// TODO and either get data or a shutdown signal.  See what I did in simple-ipc--win32.c
+// TODO in `queue_overlapped_connect()` and `wait_for_connection()` and the
+// TODO body of `server_thread_proc()`.
+// TODO
+// TODO Then `fsmonitor_list_stop()` would just need to do what I did in
+// TODO `ipc_server_stop_async()`.
+//
+// TODO This function should not cleanup the mutex and protected data
+// TODO structures because `handle_client()` in multiple IPC theads may be
+// TODO using them.  Such cleanup should be handled post-join.
+//
+// TODO getnanotime() is broken on Windows.  The very first call in the
+// TODO process computes something in microseconds and multiplies the
+// TODO result by 1000.  Since the NTFS has 100ns resolution, we can
+// TODO accidentally under report.  We should set the initial value of
+// TODO `state->latest_update` more precisely.
+//
+// TODO I think the subsequent calls to getnanotime() in the body of the
+// TODO loop are also suspect.  There is an inherent race here, right?
+// TODO We are getting the clock before waiting (on both the lock and then
+// TODO on the kernel notify event).  The presumption is that the clock
+// TODO value will be earlier than the mod time of the first file in the
+// TODO buffer returned from ReadDirectoryChangesW() -- but we don't know
+// TODO that -- we don't control the batching.  (As I Understand It), the
+// TODO kernel maintains an internal buffer (hanging off of our directory
+// TODO handle) to collect events between our calls to RDCW(), so after
+// TODO calling RDCW() and getting a batch of changes (and emptying the
+// TODO kernel buffer) and while we are processing them, any new events
+// TODO would be added to the kernel buffer *WHILE WE ARE PROCESSING*
+// TODO the previous batch.  So the next time we call RDCW() we will get
+// TODO events from *BEFORE* our time stamp.  Right???
+//
+// TODO Also WRT getnanotime(), it returns a value based upon the system
+// TODO clock (such as gettimeofday() or QueryPerformance*()).  If it
+// TODO unclear if the system clock is in anyway related to the filesystem
+// TODO clock.  I know this sounds odd.  For a local NTFS filesystem, they
+// TODO are probably the same, but for a network mount or samba share, the
+// TODO FS clock is that of the remote host -- which may have a non-trivial
+// TODO amount of clock skew.  I think we should lstat() the first file
+// TODO received in the batch and make that the baseline for the iteration
+// TODO of the loop.
+//
+// TODO This listener thread should not release the main thread until it
+// TODO has established the `latest_update` baseline.  For example,
+// TODO register for FS notifications, create a "startup cookie" and
+// TODO wait for it to appear in the notification stream.  Mark that
+// TODO as the epoch for our queue and etc.  AND THEN release the main
+// TODO thread.
+//
+// TODO RDCW() has a note in [1] WRT short-names.  We should understand
+// TODO what it means.
+// TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
+
 struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *state)
 {
 	HANDLE dir;
+
+	// TODO Investigate the best buffer size.
+	// TODO
+	// TODO There is a comment in [1] about a 64k buffer limit *IF*
+	// TODO monitoring a directory over the network.  But that would
+	// TODO be `char[64k]` not `char[64k*2]`.
+	// TODO
+	// TODO [1] doesn't list a max for a local directory.
+	// TODO
+	// TODO For very heavy IO loads with deeply nested pathnames, we might
+	// TODO need a larger buffer.
+
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD desired_access = FILE_LIST_DIRECTORY;
 	DWORD share_mode =
@@ -48,6 +146,23 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	pthread_mutex_unlock(&state->initial_mutex);
 
 	for (;;) {
+
+		// TODO Something about this feels dirty and dangerous:
+		// TODO borrowing a stack address to seed a doubly-linked
+		// TODO list.  I understand you can build the new list
+		// TODO fragment here unlocked and then only lock to tie
+		// TODO the new list to the existing shared list in `state`,
+		// TODO but it makes me want to pause and ask if it is
+		// TODO necessary.
+		//
+		// TODO For example, if we built a single-linked list here
+		// TODO (with a NULL terminator node) and kept track of the
+		// TODO first and last nodes, can we in `fsmonitor_queue_path()`
+		// TODO simply connect the parts under lock?
+		//
+		// TODO That is, do we actually use both directions of the
+		// TODO list other than when stitching them together?
+
 		struct fsmonitor_queue_item dummy, *queue = &dummy;
 		struct strbuf path = STRBUF_INIT;
 		uint64_t time = getnanotime();
@@ -66,6 +181,19 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 					   FILE_NOTIFY_CHANGE_LAST_WRITE |
 					   FILE_NOTIFY_CHANGE_CREATION,
 					   &count, NULL, NULL)) {
+
+			// TODO If this fails because the FS doesn't support
+			// TODO notifications, we should shut everything down
+			// TODO and not waste the client's time.
+			// TODO
+			// TODO Test this on some non-NTFS filesystems and see
+			// TODO what happens.   FAT, thumb drive, VHD, WSL, and
+			// TODO etc.
+			//
+			// TODO If this fails because the kernel buffer
+			// TODO overflows, then we just lost a lot of events
+			// TODO and need to resync everything.
+			
 			error("Reading Directory Change failed");
 			continue;
 		}
@@ -112,6 +240,16 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 			state->latest_update = time;
 			pthread_mutex_unlock(&state->queue_update_lock);
 		}
+
+		// TODO (more of a clarification actually)
+		// TODO The cookie_list is a list of the cookied observed
+		// TODO during the current FS notification event.  These
+		// TODO are used to wake up the corresponding `handle_client()`
+		// TODO threads.  Then we flush the list in preparation for
+		// TODO the next FS notification event.
+		// TODO
+		// TODO So the cookie_list is the currently observed set and
+		// TODO the hashmap is the eventually expected set.
 
 		for (i = 0; i < state->cookie_list.nr; i++)
 			fsmonitor_cookie_seen_trigger(state, state->cookie_list.items[i].string);
