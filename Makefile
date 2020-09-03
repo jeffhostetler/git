@@ -734,6 +734,7 @@ TEST_BUILTINS_OBJS += test-serve-v2.o
 TEST_BUILTINS_OBJS += test-sha1.o
 TEST_BUILTINS_OBJS += test-sha256.o
 TEST_BUILTINS_OBJS += test-sigchain.o
+TEST_BUILTINS_OBJS += test-simple-ipc.o
 TEST_BUILTINS_OBJS += test-strcmp-offset.o
 TEST_BUILTINS_OBJS += test-string-list.o
 TEST_BUILTINS_OBJS += test-submodule-config.o
@@ -1637,8 +1638,15 @@ ifdef NO_UNIX_SOCKETS
 	EXCLUDED_PROGRAMS += git-credential-cache git-credential-cache--daemon
 else
 	LIB_OBJS += unix-socket.o
+	LIB_OBJS += compat/simple-ipc/shared.o
+	LIB_OBJS += compat/simple-ipc/unix-sockets.o
 	PROGRAM_OBJS += credential-cache.o
 	PROGRAM_OBJS += credential-cache--daemon.o
+endif
+
+ifdef USE_WIN32_IPC
+	LIB_OBJS += compat/simple-ipc/shared.o
+	LIB_OBJS += compat/simple-ipc/win32.o
 endif
 
 ifdef NO_ICONV
