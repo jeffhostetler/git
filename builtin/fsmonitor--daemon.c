@@ -487,10 +487,19 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	if (mode == STOP) {
 		if (fsmonitor_stop_daemon() < 0)
 			die("could not stop daemon");
+
+		trace2_region_enter("fsmonitor", "polling-for-daemon-exit", the_repository);
 		while (fsmonitor_daemon_is_running())
 			sleep_millisec(50);
+		trace2_region_leave("fsmonitor", "polling-for-daemon-exit", the_repository);
+
 		return 0;
 	}
+
+	// TODO Rather than explicitly testing whether the daemon is already running,
+	// TODO just try to gently create a new daemon and handle the error code.
+	// TODO (If we don't want to do that, please add a trace region around this
+	// TODO call so that we know why we are probing the daemon.)
 
 	if (fsmonitor_daemon_is_running())
 		die("fsmonitor daemon is already running.");
