@@ -9,51 +9,60 @@ git fsmonitor--daemon --is-supported || {
 	test_done
 }
 
-# Tell the fsmonitor--daemon to stop, even if `--stop` failed
-test_atexit '
-	git fsmonitor--daemon --stop ||
-	test -n "$debug" ||
-	rm -r .git
+kill_repo () {
+	r=$1
+	git -C $r fsmonitor--daemon --stop >/dev/null 2>/dev/null
+	rm -rf $1
+	return 0
+}
+
+test_expect_success 'explicit daemon start and stop' '
+	test_when_finished "kill_repo test_explicit" &&
+
+	git init test_explicit &&
+
+	git -C test_explicit fsmonitor--daemon --start &&
+	sleep 1 &&
+	git -C test_explicit fsmonitor--daemon --is-running &&
+	git -C test_explicit fsmonitor--daemon --stop &&
+	test_must_fail git -C test_explicit fsmonitor--daemon --is-running
 '
 
-test_expect_success 'can start and stop the daemon' '
-	test_when_finished \
-		"test_might_fail git -C test fsmonitor--daemon --stop" &&
-	git init test &&
-	(
-		cd test &&
-		: start the daemon implicitly by querying it &&
-		GIT_TRACE2_EVENT="$PWD/../.git/trace" \
-		git fsmonitor--daemon --query 1 0 >actual &&
-		grep "fsmonitor.*serve" ../.git/trace &&
-		git config dummy.value 1 &&
-		sleep 0 &&
-		! grep "fsmonitor.*git/config" ../.git/trace &&
-		git fsmonitor--daemon --is-running &&
-		nul_to_q <actual >actual.filtered &&
-		grep "^[1-9][0-9]*Q/Q$" actual.filtered
-	) &&
-	rm -rf test/.git &&
-	test_must_fail git -C test fsmonitor--daemon --is-running
+test_expect_success 'implicit daemon start and stop' '
+	test_when_finished "kill_repo test_implicit" &&
+
+	git init test_implicit &&
+	test_must_fail git -C test_implicit fsmonitor--daemon --is-running &&
+
+	# query will implicitly start the daemon.
+	git -C test_implicit fsmonitor--daemon --query 1 0 >actual &&
+	nul_to_q <actual >actual.filtered &&
+	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
+
+	git -C test_implicit fsmonitor--daemon --is-running &&
+
+	# deleting the .git directory will implicitly stop the daemon.
+	rm -rf test_implicit/.git &&
+	sleep 1 &&
+	test_must_fail git -C test_implicit fsmonitor--daemon --is-running
 '
 
 test_expect_success 'cannot start multiple daemons' '
-	git fsmonitor--daemon --start &&
+	test_when_finished "kill_repo test_multiple" &&
 
-	#### HACK
-	sleep 3 &&
-	#### HACK
+	git init test_multiple &&
 
-	git fsmonitor--daemon --is-running &&
-	test_must_fail git fsmonitor--daemon --start &&
-	git fsmonitor--daemon --stop &&
+	git -C test_multiple fsmonitor--daemon --start &&
+	sleep 1 &&
+	git -C test_multiple fsmonitor--daemon --is-running &&
 
-	#### HACK
-	sleep 3 &&
-	#### HACK
+	test_must_fail git -C test_multiple fsmonitor--daemon --start 2>actual &&
+	grep "fsmonitor daemon is already running" actual &&
 
-	test_must_fail git fsmonitor--daemon --is-running
+	git -C test_multiple fsmonitor--daemon --stop &&
+	test_must_fail git -C test_multiple fsmonitor--daemon --is-running
 '
+
 # Note, after "git reset --hard HEAD" no extensions exist other than 'TREE'
 # "git update-index --fsmonitor" can be used to get the extension written
 # before testing the results.
