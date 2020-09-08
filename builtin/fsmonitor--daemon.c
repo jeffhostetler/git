@@ -29,7 +29,7 @@ static int fsmonitor_query_daemon(const char *unused_since,
 	die(_("no native fsmonitor daemon available"));
 }
 
-static int fsmonitor_run_daemon(int unused_background)
+static int fsmonitor_run_daemon(void)
 {
 	die(_("no native fsmonitor daemon available"));
 }
@@ -370,14 +370,11 @@ int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
 	return 0;
 }
 
-static int fsmonitor_run_daemon(int background)
+static int fsmonitor_run_daemon(void)
 {
 	struct fsmonitor_daemon_state state = {
 		.cookie_list = STRING_LIST_INIT_DUP
 	};
-
-	if (background && daemonize())
-		BUG(_("daemonize() not supported on this platform"));
 
 	hashmap_init(&state.paths, paths_cmp, NULL, 0);
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
@@ -536,13 +533,27 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	if (fsmonitor_daemon_is_running())
 		die("fsmonitor daemon is already running.");
 
+	if (mode == START) {
 #ifdef GIT_WINDOWS_NATIVE
-	/* Windows cannot daemonize(); emulate it */
-	if (mode == START)
+		/*
+		 * Windows cannot daemonize(); emulate it.
+		 */
 		return !!fsmonitor_spawn_daemon();
+#else
+		/*
+		 * Run the daemon in the process of the child created
+		 * by fork() since only the child returns from daemonize().
+		 */
+		if (daemonize())
+			BUG(_("daemonize() not supported on this platform"));
+		return !!fsmonitor_run_daemon();
 #endif
+	}
 
-	return !!fsmonitor_run_daemon(mode == START);
+	if (mode == RUN)
+		return !!fsmonitor_run_daemon();
+
+	BUG(_("Unhandled command mode %d"), mode);
 }
 
 // TODO BIG PICTURE QUESTION:
