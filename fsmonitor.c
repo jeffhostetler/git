@@ -490,7 +490,12 @@ int fsmonitor_daemon_is_running(void)
 	return ipc_get_active_state(git_path_fsmonitor()) == IPC_STATE__LISTENING;
 }
 
-/* Let's spin up a new server, returning when it is listening */
+/*
+ * Spawn a new long-running server in a background process.
+ *
+ * The daemon may or may not be ready yet when we return, so our
+ * caller may need to spin until the daemon is ready.
+ */
 int fsmonitor_spawn_daemon(void)
 {
 #ifndef GIT_WINDOWS_NATIVE
