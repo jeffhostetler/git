@@ -404,21 +404,45 @@ static int fsmonitor_run_daemon(int background)
 	// TODO We should join on the listener thread.
 }
 
-/* ask the daemon to quit */
+/*
+ * If the daemon is running, ask it to quit and wait for it to stop.
+ */
 static int fsmonitor_stop_daemon(void)
 {
 	struct strbuf answer = STRBUF_INIT;
 	struct ipc_client_connect_options options
 		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
 	int ret;
+	int fd;
+	enum ipc_active_state state;
 
 	options.wait_if_busy = 1;
 	options.wait_if_not_found = 0;
 
-	ret = ipc_client_send_command(git_path_fsmonitor(), &options,
-				      "quit", &answer);
+	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+	if (state != IPC_STATE__LISTENING) {
+		die("daemon not running");
+		return -1;
+	}
+
+	ret = ipc_client_send_command_to_fd(fd, "quit", &answer);
 	strbuf_release(&answer);
-	return ret;
+	close(fd);
+
+	if (ret == -1) {
+		die("could sent quit command to daemon");
+		return -1;
+	}
+
+	// TODO Should we get rid of this polling loop and just return
+	// TODO after sending the quit command?
+
+	trace2_region_enter("fsmonitor", "polling-for-daemon-exit", NULL);
+	while (fsmonitor_daemon_is_running())
+		sleep_millisec(50);
+	trace2_region_leave("fsmonitor", "polling-for-daemon-exit", NULL);
+
+	return 0;
 }
 #endif
 
@@ -501,17 +525,8 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	if (mode == IS_RUNNING)
 		return !fsmonitor_daemon_is_running();
 
-	if (mode == STOP) {
-		if (fsmonitor_stop_daemon() < 0)
-			die("could not stop daemon");
-
-		trace2_region_enter("fsmonitor", "polling-for-daemon-exit", the_repository);
-		while (fsmonitor_daemon_is_running())
-			sleep_millisec(50);
-		trace2_region_leave("fsmonitor", "polling-for-daemon-exit", the_repository);
-
-		return 0;
-	}
+	if (mode == STOP)
+		return !!fsmonitor_stop_daemon();
 
 	// TODO Rather than explicitly testing whether the daemon is already running,
 	// TODO just try to gently create a new daemon and handle the error code.
