@@ -266,13 +266,6 @@ error:
 			// TODO will try to do a pkt-line read.
 			// TODO We should consider sending a batch in a
 			// TODO large buffer.
-			//
-			// TODO This add a NUL to the per-line payload.
-			// TODO If the client re-assembles a multi-reply
-			// TODO response will it get the null bytes inside
-			// TODO the buffer?  The API is described as a string,
-			// TODO so I think there is an opportunity for confusion
-			// TODO and getting individual lines concatenated.
 
 			/* write the path, followed by a NUL */
 			if (reply(reply_data,
