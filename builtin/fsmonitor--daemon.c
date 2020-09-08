@@ -403,6 +403,23 @@ static int fsmonitor_run_daemon(int background)
 
 	// TODO We should join on the listener thread.
 }
+
+/* ask the daemon to quit */
+static int fsmonitor_stop_daemon(void)
+{
+	struct strbuf answer = STRBUF_INIT;
+	struct ipc_client_connect_options options
+		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
+	int ret;
+
+	options.wait_if_busy = 1;
+	options.wait_if_not_found = 0;
+
+	ret = ipc_client_send_command(git_path_fsmonitor(), &options,
+				      "quit", &answer);
+	strbuf_release(&answer);
+	return ret;
+}
 #endif
 
 int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)

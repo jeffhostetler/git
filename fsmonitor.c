@@ -390,23 +390,6 @@ void tweak_fsmonitor(struct index_state *istate)
 
 GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
 
-/* ask the daemon to quit */
-int fsmonitor_stop_daemon(void)
-{
-	struct strbuf answer = STRBUF_INIT;
-	struct ipc_client_connect_options options
-		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
-	int ret;
-
-	options.wait_if_busy = 1;
-	options.wait_if_not_found = 0;
-
-	ret = ipc_client_send_command(git_path_fsmonitor(), &options,
-				      "quit", &answer);
-	strbuf_release(&answer);
-	return ret;
-}
-
 int fsmonitor_query_daemon(const char *since, struct strbuf *answer)
 {
 	struct strbuf command = STRBUF_INIT;
