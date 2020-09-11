@@ -137,6 +137,11 @@ struct fsmonitor_daemon_state {
 	void *backend_data;
 
 	struct ipc_server_data *ipc_server_data;
+#ifdef GIT_WINDOWS_NATIVE
+	HANDLE hListener[2];
+#define LISTENER_SHUTDOWN 0
+#define LISTENER_HAVE_DATA 1
+#endif
 };
 
 void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
