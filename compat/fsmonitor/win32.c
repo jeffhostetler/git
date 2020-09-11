@@ -44,10 +44,6 @@ int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
 	return 0;
 }
 
-// TODO This is a thread-proc, right?
-//
-// TODO Add trace2_thread_start() and _exit()
-//
 // TODO This should not call exit(), rather goto end and returning.
 //
 // TODO The `return state` statements assume that someone is going to join
@@ -139,11 +135,6 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 
 	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
 			  FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	pthread_mutex_lock(&state->initial_mutex);
-	state->latest_update = getnanotime();
-	state->initialized = 1;
-	pthread_cond_signal(&state->initial_cond);
-	pthread_mutex_unlock(&state->initial_mutex);
 
 	for (;;) {
 

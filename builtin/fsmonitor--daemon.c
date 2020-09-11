@@ -76,6 +76,8 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 // TODO in one of the IPC thread pool worker threads.  Which
 // TODO could cause the the daemon to become unresponsive (if
 // TODO several worker threads get stuck).
+//
+// TODO Who destroys &cookie.seen_lock and &cookie.seen_cond ?
 
 static void fsmonitor_wait_for_cookie(struct fsmonitor_daemon_state *state)
 {
@@ -375,6 +377,18 @@ int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
 	return 0;
 }
 
+static void *fsmonitor_listen_thread_proc(void *_state)
+{
+	struct fsmonitor_daemon_state *state = _state;
+
+	trace2_thread_start("fsm-listen");
+
+	fsmonitor_listen(state);
+
+	trace2_thread_exit();
+	return NULL;
+}
+
 static int fsmonitor_run_daemon(void)
 {
 	struct fsmonitor_daemon_state state = {
@@ -385,29 +399,60 @@ static int fsmonitor_run_daemon(void)
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);
-	pthread_mutex_init(&state.initial_mutex, NULL);
-	pthread_cond_init(&state.initial_cond, NULL);
 
-	pthread_mutex_lock(&state.initial_mutex);
+	state.latest_update = getnanotime();
+
+	/*
+	 * Start the IPC thread pool before the we've started the file
+	 * system event listener thread so that we have the IPC handle
+	 * before we need it.  (We do need to be carefull because
+	 * quickly arriving client connection events may cause
+	 * handle_client() to get called before we have the fsmonitor
+	 * listener thread running.)
+	 */
+	if (ipc_server_run_async(&state.ipc_server_data,
+				 git_path_fsmonitor(),
+				 fsmonitor__ipc_threads,
+				 handle_client,
+				 &state)) {
+		pthread_mutex_destroy(&state.cookies_lock);
+		pthread_mutex_destroy(&state.queue_update_lock);
+		return error(_("could not start IPC thread pool"));
+	}
+
+	/*
+	 * Start the fsmonitor listener thread to collect filesystem
+	 * events.
+	 */
 	if (pthread_create(&state.watcher_thread, NULL,
-			   (void *(*)(void *)) fsmonitor_listen, &state) < 0)
+			   fsmonitor_listen_thread_proc, &state) < 0) {
+		ipc_server_stop_async(state.ipc_server_data);
+		ipc_server_await(state.ipc_server_data);
+		ipc_server_free(state.ipc_server_data);
+
+		pthread_mutex_destroy(&state.cookies_lock);
+		pthread_mutex_destroy(&state.queue_update_lock);
 		return error(_("could not start fsmonitor listener thread"));
+	}
 
-	/* wait for the thread to signal that it is ready */
-	while (!state.initialized)
-		pthread_cond_wait(&state.initial_cond, &state.initial_mutex);
-	pthread_mutex_unlock(&state.initial_mutex);
+	/*
+	 * The daemon is now fully functional in background threads.
+	 * Wait for the IPC thread pool to shutdown (whether by client
+	 * request or from filesystem activity).
+	 */
+	ipc_server_await(state.ipc_server_data);
+	pthread_join(state.watcher_thread, NULL);
+	ipc_server_free(state.ipc_server_data);
 
-	return ipc_server_run(git_path_fsmonitor(),
-			      fsmonitor__ipc_threads,
-			      handle_client,
-			      &state);
+	pthread_mutex_destroy(&state.cookies_lock);
+	pthread_mutex_destroy(&state.queue_update_lock);
 
-	// TODO We should join on the listener thread.
+	return 0;
 }
 
 /*
- * If the daemon is running, ask it to quit and wait for it to stop.
+ * If the daemon is running (in another process), ask it to quit and
+ * wait for it to stop.
  */
 static int fsmonitor_stop_daemon(void)
 {
