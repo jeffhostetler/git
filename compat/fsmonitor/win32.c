@@ -27,47 +27,71 @@ static int normalize_path(FILE_NOTIFY_INFORMATION *info, struct strbuf *normaliz
 	return strbuf_normalize_path(normalized_path);
 }
 
-// TODO Calling TerminateThread is very unsafe.
-// TODO We should have a way to notify the thread to exit.
-//
-// TODO For example, raise the hEvent described below.  This will let
-// TODO the listener thread start shutting down without blocking the
-// TODO response to the client in `handle_client()`.   ((I don't think
-// TODO we need to call `ipc_server_stop_async()` because the IPC
-// TODO layer will do that when `handle_client()` returns `SIMPLE_IPC_QUIT`.))
-
+/*
+ * Gently tell the fsmonitor listener thread to stop.
+ */
 int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
 {
-	if (!TerminateThread(state->watcher_thread.handle, 1))
-		return -1;
+	SetEvent(state->hListener[LISTENER_SHUTDOWN]);
 
 	return 0;
 }
 
-// TODO This should not call exit(), rather goto end and returning.
-//
+/*
+ * Use OVERLAPPED IO to call ReadDirectoryChangesW() so that we can
+ * wait for IO and/or a shutdown event.
+ *
+ * Returns 0 if successful.
+ * Returns -1 on error.
+ * Returns FSMONITOR_DAEMON_QUIT if shutdown signaled.
+ */
+static int read_directory_changes_overlapped(
+	struct fsmonitor_daemon_state *state,
+	HANDLE dir,
+	char *buffer,
+	size_t buffer_len,
+	DWORD *count)
+{
+	OVERLAPPED overlapped;
+	DWORD dwWait;
+
+	memset(&overlapped, 0, sizeof(overlapped));
+
+	ResetEvent(state->hListener[LISTENER_HAVE_DATA]);
+	overlapped.hEvent = state->hListener[LISTENER_HAVE_DATA];
+
+	if (!ReadDirectoryChangesW(dir, buffer, buffer_len, TRUE,
+				   FILE_NOTIFY_CHANGE_FILE_NAME |
+				   FILE_NOTIFY_CHANGE_DIR_NAME |
+				   FILE_NOTIFY_CHANGE_ATTRIBUTES |
+				   FILE_NOTIFY_CHANGE_SIZE |
+				   FILE_NOTIFY_CHANGE_LAST_WRITE |
+				   FILE_NOTIFY_CHANGE_CREATION,
+				   count, &overlapped, NULL))
+		return error("ReadDirectoryChangedW failed");
+
+	dwWait = WaitForMultipleObjects(2, state->hListener, FALSE, INFINITE);
+
+	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA) {
+		if (GetOverlappedResult(dir, &overlapped, count, TRUE))
+			return 0;
+		return error("GetOverlappedResult failed after ReadDirectoryChangedW");
+	}
+
+	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN) {
+		trace2_printf("observed SHUTDOWN event in RDCW");
+		return FSMONITOR_DAEMON_QUIT;
+	}
+
+	return error("WaitForMultipleObjects failed after ReadDirectoryChangedW");
+}
+
+
+
 // TODO The `return state` statements assume that someone is going to join
 // TODO in order to recover that info, but the caller probably already has
 // TODO the state (because it needs the pthread_id to call join).  So this
 // TODO is probably not needed.  That is, just return NULL.
-//
-// TODO Also WRT returning on a FS error (or special FSMONITOR_DAEMON_QUIT
-// TODO or negative):  This will effectively kill all in-progress responses
-// TODO 1 or more IPC clients.  It would be better to call ipc_server_stop_async()
-// TODO and then return from this thread.
-//
-// TODO We should open `dir` in OVERLAPPED mode and create an hEvent for
-// TODO shutdown and have the main loop here call `WaitForMultipleObjects`
-// TODO and either get data or a shutdown signal.  See what I did in simple-ipc--win32.c
-// TODO in `queue_overlapped_connect()` and `wait_for_connection()` and the
-// TODO body of `server_thread_proc()`.
-// TODO
-// TODO Then `fsmonitor_list_stop()` would just need to do what I did in
-// TODO `ipc_server_stop_async()`.
-//
-// TODO This function should not cleanup the mutex and protected data
-// TODO structures because `handle_client()` in multiple IPC theads may be
-// TODO using them.  Such cleanup should be handled post-join.
 //
 // TODO getnanotime() is broken on Windows.  The very first call in the
 // TODO process computes something in microseconds and multiplies the
@@ -107,6 +131,12 @@ int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
 // TODO as the epoch for our queue and etc.  AND THEN release the main
 // TODO thread.
 //
+// TODO TODO I moved the initialization of `latest_update` to the main
+// TODO TODO thread to help simplify startup of this thread and the IPC
+// TODO TODO thread pool (and to eliminate the initial_mutex,cond vars.
+// TODO TODO I need to revisit what that field means and how the initial
+// TODO TODO timestamp should be set.
+//
 // TODO RDCW() has a note in [1] WRT short-names.  We should understand
 // TODO what it means.
 // TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
@@ -134,7 +164,8 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	int i;
 
 	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
-			  FILE_FLAG_BACKUP_SEMANTICS, NULL);
+			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+			  NULL);
 
 	for (;;) {
 
@@ -164,29 +195,18 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 			time = state->latest_update + 1;
 		pthread_mutex_unlock(&state->queue_update_lock);
 
-		if (!ReadDirectoryChangesW(dir, buffer, sizeof(buffer), TRUE,
-					   FILE_NOTIFY_CHANGE_FILE_NAME |
-					   FILE_NOTIFY_CHANGE_DIR_NAME |
-					   FILE_NOTIFY_CHANGE_ATTRIBUTES |
-					   FILE_NOTIFY_CHANGE_SIZE |
-					   FILE_NOTIFY_CHANGE_LAST_WRITE |
-					   FILE_NOTIFY_CHANGE_CREATION,
-					   &count, NULL, NULL)) {
+		switch (read_directory_changes_overlapped(state, dir,
+							  buffer, sizeof(buffer),
+							  &count)) {
+		case 0: /* we have valid data */
+			break;
 
-			// TODO If this fails because the FS doesn't support
-			// TODO notifications, we should shut everything down
-			// TODO and not waste the client's time.
-			// TODO
-			// TODO Test this on some non-NTFS filesystems and see
-			// TODO what happens.   FAT, thumb drive, VHD, WSL, and
-			// TODO etc.
-			//
-			// TODO If this fails because the kernel buffer
-			// TODO overflows, then we just lost a lot of events
-			// TODO and need to resync everything.
-			
-			error("Reading Directory Change failed");
-			continue;
+		case FSMONITOR_DAEMON_QUIT: /* shutdown event received */
+			goto shutdown_event;
+
+		default:
+		case -1: /* IO error reading directory events */
+			goto force_error_stop;
 		}
 
 		p = buffer;
@@ -201,20 +221,24 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 							 info->Action ==
 							 FILE_ACTION_REMOVED);
 
-			if (!special &&
-			    fsmonitor_queue_path(state, &queue, path.buf,
-						 path.len, time) < 0) {
-				CloseHandle(dir);
-				state->error_code = -1;
-				error("could not queue '%s'; exiting",
-				      path.buf);
-				return state;
+			if (special > 0) {
+				/* ignore paths inside of .git/ */
+			}
+			else if (!special) {
+				/* try to queue normal pathname */
+				if (fsmonitor_queue_path(state, &queue, path.buf,
+							 path.len, time) < 0) {
+					error("could not queue '%s'; exiting",
+					      path.buf);
+					goto force_error_stop;
+				}
 			} else if (special == FSMONITOR_DAEMON_QUIT) {
-				CloseHandle(dir);
-				/* force-quit */
-				exit(0);
-			} else if (special < 0)
-				return state;
+				/* .git directory deleted */
+				trace2_printf("observed SHUTDOWN from .git dir");
+				goto force_shutdown;
+			} else {
+				BUG("special %d < 0 for '%s'", special, path.buf);
+			}
 
 			if (!info->NextEntryOffset)
 				break;
@@ -249,5 +273,18 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 		strbuf_release(&path);
 	}
 
+force_error_stop:
+	state->error_code = -1;
+
+force_shutdown:
+	/*
+	 * Tell the IPC thead pool to stop (which completes the await
+	 * in the main thread (which will also signal this thread (if
+	 * we are still alive))).
+	 */
+	ipc_server_stop_async(state->ipc_server_data);
+
+shutdown_event:
+	CloseHandle(dir);
 	return state;
 }

@@ -77,6 +77,14 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 // TODO could cause the the daemon to become unresponsive (if
 // TODO several worker threads get stuck).
 //
+// TODO TODO YES -- If the .git directory gets deleted and the
+// TODO TODO fsmonitor listener thread sees it (and shutdown)
+// TODO TODO before it (the fsmonitor listener thread) sees
+// TODO TODO the cookie event that a worker thread is waiting
+// TODO TODO for, that worker thread will block forever.
+// TODO TODO So I think we need a flag bit under the lock to
+// TODO TODO tell worker threads to just give up.
+//
 // TODO Who destroys &cookie.seen_lock and &cookie.seen_cond ?
 
 static void fsmonitor_wait_for_cookie(struct fsmonitor_daemon_state *state)
@@ -195,10 +203,13 @@ static int handle_client(void *data, const char *command,
 	trace2_data_string("fsmonitor", the_repository, "command", command);
 
 	if (!strcmp(command, "quit")) {
-		if (fsmonitor_listen_stop(state))
-			error("Could not terminate watcher thread");
-		/* TODO: figure out whether we can do better */
-		sleep_millisec(50);
+		/*
+		 * A client has requested that the daemon shutdown.
+		 *
+		 * Tell the IPC thread pool to shutdown (which completes
+		 * the await in the main thread (which can stop the
+		 * fsmonitor listener thread)).
+		 */
 		return SIMPLE_IPC_QUIT;
 	}
 
@@ -309,15 +320,12 @@ static int paths_cmp(const void *data, const struct hashmap_entry *he1,
  * a cookie file inside ".git" to better sync up with filesystem events,
  * so we handle that separately.
  *
- * If/when ".git" or ".git/" is deleted we force a shutdown.
+ * If/when ".git" or ".git/" is deleted we force a shutdown of the
+ * fsmonitor listener thread.
  *
- * On platforms using Unix domain sockets, we might want to watch for
- * deletes of the socket pathname and similarly shutdown (because new
- * clients won't be able to connect to us on the socket we are bound to).
- * This assumes that the path to our Unix domain socket is inside a directory
- * that we are watching, which is not necessarily true.  Instead, we let the
- * simple-ipc layer monitor the existence of the socket pathname and trigger
- * a shutdown.
+ * On platforms using Unix domain sockets, the IPC layer watches for
+ * deletes of the socket pathname, so we don't have to consider them
+ * as special paths here.
  */
 int fsmonitor_special_path(struct fsmonitor_daemon_state *state,
 			   const char *path, size_t len, int was_deleted)
@@ -401,6 +409,10 @@ static int fsmonitor_run_daemon(void)
 	pthread_mutex_init(&state.cookies_lock, NULL);
 
 	state.latest_update = getnanotime();
+#ifdef GIT_WINDOWS_NATIVE
+	state.hListener[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	state.hListener[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
+#endif
 
 	/*
 	 * Start the IPC thread pool before the we've started the file
@@ -417,6 +429,10 @@ static int fsmonitor_run_daemon(void)
 				 &state)) {
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
+#ifdef GIT_WINDOWS_NATIVE
+		CloseHandle(state.hListener[0]);
+		CloseHandle(state.hListener[1]);
+#endif
 		return error(_("could not start IPC thread pool"));
 	}
 
@@ -432,6 +448,10 @@ static int fsmonitor_run_daemon(void)
 
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
+#ifdef GIT_WINDOWS_NATIVE
+		CloseHandle(state.hListener[0]);
+		CloseHandle(state.hListener[1]);
+#endif
 		return error(_("could not start fsmonitor listener thread"));
 	}
 
@@ -441,11 +461,18 @@ static int fsmonitor_run_daemon(void)
 	 * request or from filesystem activity).
 	 */
 	ipc_server_await(state.ipc_server_data);
+
+	fsmonitor_listen_stop(&state);
 	pthread_join(state.watcher_thread, NULL);
+
 	ipc_server_free(state.ipc_server_data);
 
 	pthread_mutex_destroy(&state.cookies_lock);
 	pthread_mutex_destroy(&state.queue_update_lock);
+#ifdef GIT_WINDOWS_NATIVE
+	CloseHandle(state.hListener[0]);
+	CloseHandle(state.hListener[1]);
+#endif
 
 	return 0;
 }
