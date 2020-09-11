@@ -4,6 +4,7 @@
 #include "cache.h"
 #include "dir.h"
 #include "run-command.h"
+#include "simple-ipc.h"
 
 extern struct trace_key trace_fsmonitor;
 
@@ -128,13 +129,14 @@ struct fsmonitor_daemon_state {
 	struct fsmonitor_queue_item *last;
 	uint64_t latest_update;
 	pthread_t watcher_thread;
-	pthread_mutex_t queue_update_lock, initial_mutex, cookies_lock;
-	pthread_cond_t initial_cond;
-	int initialized, cookie_seq;
+	pthread_mutex_t queue_update_lock, cookies_lock;
+	int cookie_seq;
 	struct hashmap cookies;
 	struct string_list cookie_list;
 	int error_code;
 	void *backend_data;
+
+	struct ipc_server_data *ipc_server_data;
 };
 
 void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,

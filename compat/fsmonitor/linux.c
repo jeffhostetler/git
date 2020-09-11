@@ -115,8 +115,6 @@ static int unwatch_directory(struct fsmonitor_daemon_state *state,
 	return 0; /* ignore unseen path */
 }
 
-// TODO This is a thread-proc.  Name it as such to let us know that.
-//
 // TODO Don't call die() in a thead-proc.  Rather, return and let the
 // TODO normal cleanup happen (such as deleting unix domain sockets on
 // TODO the disk).
