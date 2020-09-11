@@ -301,10 +301,22 @@ static int paths_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->path, keydata ? keydata : b->path);
 }
 
-// TODO add the path of the listener unix domain socket to this list.
-// TODO so that if someone deletes the socket, we will automatically
-// TODO shutdown rather than being orphaned.
-//
+/*
+ * FSMonitor never wants to return information on paths within ".git"
+ * to the client.  However, FSMonitor internally uses the creation of
+ * a cookie file inside ".git" to better sync up with filesystem events,
+ * so we handle that separately.
+ *
+ * If/when ".git" or ".git/" is deleted we force a shutdown.
+ *
+ * On platforms using Unix domain sockets, we might want to watch for
+ * deletes of the socket pathname and similarly shutdown (because new
+ * clients won't be able to connect to us on the socket we are bound to).
+ * This assumes that the path to our Unix domain socket is inside a directory
+ * that we are watching, which is not necessarily true.  Instead, we let the
+ * simple-ipc layer monitor the existence of the socket pathname and trigger
+ * a shutdown.
+ */
 int fsmonitor_special_path(struct fsmonitor_daemon_state *state,
 			   const char *path, size_t len, int was_deleted)
 {
