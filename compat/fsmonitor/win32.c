@@ -80,6 +80,10 @@ static int read_directory_changes_overlapped(
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN) {
 		trace2_printf("observed SHUTDOWN event in RDCW");
+
+		CancelIoEx(dir, &overlapped);
+		GetOverlappedResult(dir, &overlapped, count, TRUE);
+
 		return FSMONITOR_DAEMON_QUIT;
 	}
 
