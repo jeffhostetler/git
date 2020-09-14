@@ -163,7 +163,6 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	DWORD count = 0;
 	int i;
 
-	trace2_printf("XXX [cwd %s]", xgetcwd());
 	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
 			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
 			  NULL);
@@ -221,8 +220,6 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 				(info->Action == FILE_ACTION_RENAMED_OLD_NAME);
 
 			normalize_path(info, &path);
-			trace2_printf("YYY [cwd %s][info %S][path %s]",
-				      xgetcwd(), info->FileName, path.buf);
 
 			special = fsmonitor_special_path(
 				state, path.buf, path.len, deleted_flag);
@@ -239,8 +236,7 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 					goto force_error_stop;
 				}
 			} else if (special == FSMONITOR_DAEMON_QUIT) {
-				/* .git directory deleted */
-				trace2_printf("observed SHUTDOWN from .git dir");
+				/* .git directory deleted (or renamed away) */
 				goto force_shutdown;
 			} else {
 				BUG("special %d < 0 for '%s'", special, path.buf);
