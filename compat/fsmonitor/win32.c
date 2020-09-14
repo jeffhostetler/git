@@ -68,26 +68,22 @@ static int read_directory_changes_overlapped(
 				   FILE_NOTIFY_CHANGE_LAST_WRITE |
 				   FILE_NOTIFY_CHANGE_CREATION,
 				   count, &overlapped, NULL))
-		return error("ReadDirectoryChangedW failed");
+		return error("ReadDirectoryChangedW failed [GLE %ld]",
+			     GetLastError());
 
 	dwWait = WaitForMultipleObjects(2, state->hListener, FALSE, INFINITE);
 
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA) {
-		if (GetOverlappedResult(dir, &overlapped, count, TRUE))
-			return 0;
-		return error("GetOverlappedResult failed after ReadDirectoryChangedW");
-	}
+	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA &&
+	    GetOverlappedResult(dir, &overlapped, count, TRUE))
+		return 0;
 
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN) {
-		trace2_printf("observed SHUTDOWN event in RDCW");
+	CancelIoEx(dir, &overlapped);
+	GetOverlappedResult(dir, &overlapped, count, TRUE);
 
-		CancelIoEx(dir, &overlapped);
-		GetOverlappedResult(dir, &overlapped, count, TRUE);
-
+	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
 		return FSMONITOR_DAEMON_QUIT;
-	}
 
-	return error("WaitForMultipleObjects failed after ReadDirectoryChangedW");
+	return error("could not read directory changes");
 }
 
 
