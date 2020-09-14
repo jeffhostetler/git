@@ -163,6 +163,7 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	DWORD count = 0;
 	int i;
 
+	trace2_printf("XXX [cwd %s]", xgetcwd());
 	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
 			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
 			  NULL);
@@ -215,13 +216,16 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 		for (;;) {
 			FILE_NOTIFY_INFORMATION *info = (void *)p;
 			int special;
+			int deleted_flag =
+				(info->Action == FILE_ACTION_REMOVED) |
+				(info->Action == FILE_ACTION_RENAMED_OLD_NAME);
 
 			normalize_path(info, &path);
+			trace2_printf("YYY [cwd %s][info %S][path %s]",
+				      xgetcwd(), info->FileName, path.buf);
 
-			special = fsmonitor_special_path(state, path.buf,
-							 path.len,
-							 info->Action ==
-							 FILE_ACTION_REMOVED);
+			special = fsmonitor_special_path(
+				state, path.buf, path.len, deleted_flag);
 
 			if (special > 0) {
 				/* ignore paths inside of .git/ */
