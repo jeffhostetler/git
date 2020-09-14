@@ -166,6 +166,8 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
 			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
 			  NULL);
+	if (dir == INVALID_HANDLE_VALUE)
+		goto force_error_stop;
 
 	for (;;) {
 
@@ -285,6 +287,7 @@ force_shutdown:
 	ipc_server_stop_async(state->ipc_server_data);
 
 shutdown_event:
-	CloseHandle(dir);
+	if (dir != INVALID_HANDLE_VALUE)
+		CloseHandle(dir);
 	return state;
 }
