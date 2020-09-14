@@ -28,7 +28,7 @@ test_expect_success 'explicit daemon start and stop' '
 	test_must_fail git -C test_explicit fsmonitor--daemon --is-running
 '
 
-test_expect_success 'implicit daemon start and stop' '
+test_expect_success 'implicit daemon start and stop (delete .git)' '
 	test_when_finished "kill_repo test_implicit" &&
 
 	git init test_implicit &&
@@ -45,6 +45,30 @@ test_expect_success 'implicit daemon start and stop' '
 	rm -rf test_implicit/.git &&
 	sleep 1 &&
 	test_must_fail git -C test_implicit fsmonitor--daemon --is-running
+'
+
+test_expect_success 'implicit2 daemon start and stop (rename .git)' '
+	test_when_finished "kill_repo test_implicit2" &&
+
+	git init test_implicit2 &&
+	test_must_fail git -C test_implicit2 fsmonitor--daemon --is-running &&
+
+	# query will implicitly start the daemon.
+	git -C test_implicit2 fsmonitor--daemon --query 1 0 >actual &&
+	nul_to_q <actual >actual.filtered &&
+	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
+
+	git -C test_implicit2 fsmonitor--daemon --is-running &&
+
+	# renaming the .git directory will implicitly stop the daemon.
+	#
+	# (but we need to move it back so that the client will try to create a
+	# pathname to the well-known socket for the test (and not for the
+	# containing Git repo)).
+	mv test_implicit2/.git test_implicit2/.xxx &&
+	mv test_implicit2/.xxx test_implicit2/.git &&
+	sleep 1 &&
+	test_must_fail git -C test_implicit2 fsmonitor--daemon --is-running
 '
 
 test_expect_success 'cannot start multiple daemons' '
