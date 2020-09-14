@@ -408,6 +408,7 @@ static int fsmonitor_run_daemon(void)
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);
 
+	state.error_code = 0;
 	state.latest_update = getnanotime();
 #ifdef GIT_WINDOWS_NATIVE
 	state.hListener[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -474,7 +475,13 @@ static int fsmonitor_run_daemon(void)
 	CloseHandle(state.hListener[1]);
 #endif
 
-	return 0;
+	/*
+	 * TODO What error code should our daemon return if/when our
+	 * TODO listener thread encounters a hard filesystem error and
+	 * TODO terminates (rather than getting asked to shutdown) ?
+	 * TODO This is perhaps an arbitrary choice.
+	 */
+	return state.error_code;
 }
 
 /*
