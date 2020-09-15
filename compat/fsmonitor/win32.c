@@ -1,6 +1,15 @@
 #include "cache.h"
 #include "fsmonitor.h"
 
+struct fsmonitor_daemon_backend_data
+{
+	HANDLE hDir;
+
+	HANDLE hListener[2];
+#define LISTENER_SHUTDOWN 0
+#define LISTENER_HAVE_DATA 1
+};
+
 // TODO Long paths can be 32k WIDE CHARS, but that may expand into more
 // TODO than 32k BYTES if there are any UTF8 multi-byte sequences.
 // TODO But this is rather rare, try it with a fixed buffer size first
@@ -27,14 +36,9 @@ static int normalize_path(FILE_NOTIFY_INFORMATION *info, struct strbuf *normaliz
 	return strbuf_normalize_path(normalized_path);
 }
 
-/*
- * Gently tell the fsmonitor listener thread to stop.
- */
-int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
+void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 {
-	SetEvent(state->hListener[LISTENER_SHUTDOWN]);
-
-	return 0;
+	SetEvent(state->backend_data->hListener[LISTENER_SHUTDOWN]);
 }
 
 /*
@@ -47,7 +51,6 @@ int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
  */
 static int read_directory_changes_overlapped(
 	struct fsmonitor_daemon_state *state,
-	HANDLE dir,
 	char *buffer,
 	size_t buffer_len,
 	DWORD *count)
@@ -57,10 +60,11 @@ static int read_directory_changes_overlapped(
 
 	memset(&overlapped, 0, sizeof(overlapped));
 
-	ResetEvent(state->hListener[LISTENER_HAVE_DATA]);
-	overlapped.hEvent = state->hListener[LISTENER_HAVE_DATA];
+	ResetEvent(state->backend_data->hListener[LISTENER_HAVE_DATA]);
+	overlapped.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA];
 
-	if (!ReadDirectoryChangesW(dir, buffer, buffer_len, TRUE,
+	if (!ReadDirectoryChangesW(state->backend_data->hDir,
+				   buffer, buffer_len, TRUE,
 				   FILE_NOTIFY_CHANGE_FILE_NAME |
 				   FILE_NOTIFY_CHANGE_DIR_NAME |
 				   FILE_NOTIFY_CHANGE_ATTRIBUTES |
@@ -71,14 +75,14 @@ static int read_directory_changes_overlapped(
 		return error("ReadDirectoryChangedW failed [GLE %ld]",
 			     GetLastError());
 
-	dwWait = WaitForMultipleObjects(2, state->hListener, FALSE, INFINITE);
+	dwWait = WaitForMultipleObjects(2, state->backend_data->hListener, FALSE, INFINITE);
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA &&
-	    GetOverlappedResult(dir, &overlapped, count, TRUE))
+	    GetOverlappedResult(state->backend_data->hDir, &overlapped, count, TRUE))
 		return 0;
 
-	CancelIoEx(dir, &overlapped);
-	GetOverlappedResult(dir, &overlapped, count, TRUE);
+	CancelIoEx(state->backend_data->hDir, &overlapped);
+	GetOverlappedResult(state->backend_data->hDir, &overlapped, count, TRUE);
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
 		return FSMONITOR_DAEMON_QUIT;
@@ -86,13 +90,51 @@ static int read_directory_changes_overlapped(
 	return error("could not read directory changes");
 }
 
+int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+	DWORD desired_access = FILE_LIST_DIRECTORY;
+	DWORD share_mode =
+		FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE;
+	HANDLE dir;
 
+	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
+			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+			  NULL);
+	if (dir == INVALID_HANDLE_VALUE)
+		return error(_("could not watch '.'"));
 
-// TODO The `return state` statements assume that someone is going to join
-// TODO in order to recover that info, but the caller probably already has
-// TODO the state (because it needs the pthread_id to call join).  So this
-// TODO is probably not needed.  That is, just return NULL.
-//
+	data = xcalloc(1, sizeof(*data));
+
+	data->hDir = dir;
+
+	data->hListener[LISTENER_SHUTDOWN] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	data->hListener[LISTENER_HAVE_DATA] = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+	state->backend_data = data;
+	return 0;
+}
+
+void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+
+	if (!state || !state->backend_data)
+		return;
+
+	data = state->backend_data;
+
+	if (data->hListener[LISTENER_SHUTDOWN] != INVALID_HANDLE_VALUE)
+		CloseHandle(data->hListener[LISTENER_SHUTDOWN]);
+	if (data->hListener[LISTENER_HAVE_DATA] != INVALID_HANDLE_VALUE)
+		CloseHandle(data->hListener[LISTENER_HAVE_DATA]);
+
+	if (data->hDir != INVALID_HANDLE_VALUE)
+		CloseHandle(data->hDir);
+
+	FREE_AND_NULL(state->backend_data);
+}
+
 // TODO getnanotime() is broken on Windows.  The very first call in the
 // TODO process computes something in microseconds and multiplies the
 // TODO result by 1000.  Since the NTFS has 100ns resolution, we can
@@ -141,10 +183,8 @@ static int read_directory_changes_overlapped(
 // TODO what it means.
 // TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
 
-struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *state)
+void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
-	HANDLE dir;
-
 	// TODO Investigate the best buffer size.
 	// TODO
 	// TODO There is a comment in [1] about a 64k buffer limit *IF*
@@ -157,17 +197,8 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	// TODO need a larger buffer.
 
 	char buffer[65536 * sizeof(wchar_t)], *p;
-	DWORD desired_access = FILE_LIST_DIRECTORY;
-	DWORD share_mode =
-		FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE;
 	DWORD count = 0;
 	int i;
-
-	dir = CreateFileW(L".", desired_access, share_mode, NULL, OPEN_EXISTING,
-			  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-			  NULL);
-	if (dir == INVALID_HANDLE_VALUE)
-		goto force_error_stop;
 
 	for (;;) {
 
@@ -197,7 +228,7 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 			time = state->latest_update + 1;
 		pthread_mutex_unlock(&state->queue_update_lock);
 
-		switch (read_directory_changes_overlapped(state, dir,
+		switch (read_directory_changes_overlapped(state,
 							  buffer, sizeof(buffer),
 							  &count)) {
 		case 0: /* we have valid data */
@@ -287,7 +318,5 @@ force_shutdown:
 	ipc_server_stop_async(state->ipc_server_data);
 
 shutdown_event:
-	if (dir != INVALID_HANDLE_VALUE)
-		CloseHandle(dir);
-	return state;
+	return;
 }
