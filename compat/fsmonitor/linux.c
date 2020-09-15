@@ -10,9 +10,23 @@ KHASH_INIT(wd2path, int, const char *, 1, kh_int_hash_func, kh_int_hash_equal);
 
 struct fsmonitor_daemon_backend_data {
 	int fd_inotify;
+	int fd_send_shutdown;
+	int fd_wait_shutdown;
+
 	kh_path2wd_t *path2wd;
 	kh_wd2path_t *wd2path;
 };
+
+static int set_fd_nonblocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, NULL);
+
+	if (flags == -1 ||
+	    fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+		return -1;
+
+	return 0;
+}
 
 static int watch_directory(struct fsmonitor_daemon_state *state,
 			   const char *path)
@@ -117,61 +131,151 @@ static int unwatch_directory(struct fsmonitor_daemon_state *state,
 	return 0; /* ignore unseen path */
 }
 
-// TODO Don't call die() in a thead-proc.  Rather, return and let the
-// TODO normal cleanup happen (such as deleting unix domain sockets on
-// TODO the disk).
-//
-struct fsmonitor_daemon_state *fsmonitor_listen(
-		struct fsmonitor_daemon_state *state)
+int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+	struct strbuf buf = STRBUF_INIT;
+	int pair[2];
+
+	data = xcalloc(1, sizeof(*data));
+	data->fd_inotify = -1;
+	data->fd_send_shutdown = -1;
+	data->fd_wait_shutdown = -1;
+
+	state->backend_data = data;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == -1 ||
+	    set_fd_nonblocking(pair[1]) == -1) {
+		error_errno(_("could not create socketpair for inotify"));
+		goto failed;
+	}
+	data->fd_send_shutdown = pair[0];
+	data->fd_wait_shutdown = pair[1];
+
+	data->fd_inotify = inotify_init();
+	if (data->fd_inotify < 0 ||
+	    set_fd_nonblocking(data->fd_inotify) == -1) {
+		error_errno(_("could not initialize inotify"));
+		goto failed;
+	}
+
+	data->path2wd = kh_init_path2wd();
+	data->wd2path = kh_init_wd2path();
+
+	if (watch_directory_recursively(state, &buf) < 0) {
+		error_errno(_("could not watch '.'"));
+		goto failed;
+	}
+
+	strbuf_release(&buf);
+	return 0;
+
+failed:
+	/*
+	 * TODO Should we free/release the k-hashes?
+	 */
+	strbuf_release(&buf);
+	close(data->fd_send_shutdown);
+	close(data->fd_wait_shutdown);
+	close(data->fd_inotify);
+	return -1;
+}
+
+static void release_inotify_data(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+
+	if (kh_size(data->path2wd) > 0) {
+		const char *path;
+		int wd;
+
+		kh_foreach(data->path2wd, path, wd, {
+			free((char *)path);
+			inotify_rm_watch(data->fd_inotify, wd);
+		});
+	}
+	kh_release_path2wd(data->path2wd);
+	kh_release_wd2path(data->wd2path);
+}
+
+void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+
+	if (!state || !state->backend_data)
+		return;
+
+	data = state->backend_data;
+
+	release_inotify_data(state);
+
+	close(data->fd_send_shutdown);
+	close(data->fd_wait_shutdown);
+	close(data->fd_inotify);
+
+	FREE_AND_NULL(state->backend_data);
+}
+
+void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+
+	/*
+	 * Write a byte to the shutdown socket pair to wake up and notify
+	 * the fsmonitor listener thread.
+	 *
+	 * TODO Technically, if we just close the send-side of the pipe
+	 * TODO pair, the listener poll() should wait up.  So we might
+	 * TODO not need this.
+	 */
+	if (write(state->backend_data->fd_send_shutdown, "Q", 1) < 0)
+		error_errno("could not send shutdown to fsmonitor");
+
+	close(data->fd_send_shutdown);
+}
+
+void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 	uint32_t deleted = IN_DELETE | IN_DELETE_SELF | IN_MOVED_FROM;
 	uint32_t dir_created = IN_CREATE | IN_ISDIR;
 	uint32_t dir_deleted = IN_DELETE | IN_ISDIR;
 	struct strbuf buf = STRBUF_INIT;
-	struct fsmonitor_daemon_backend_data data;
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+	struct pollfd pollfd[2];
 	int ret;
-
-	trace2_region_enter("fsmonitor", "inotify", the_repository);
-
-	data.fd_inotify = inotify_init();
-	if (data.fd_inotify < 0) {
-		error_errno(_("could not initialize inotify"));
-		trace2_region_leave("fsmonitor", "inotify", the_repository);
-		return state;
-	}
-
-	data.path2wd = kh_init_path2wd();
-	data.wd2path = kh_init_wd2path();
-	state->backend_data = &data;
-
-	ret = watch_directory_recursively(state, &buf);
-	if (ret < 0) {
-		error_errno(_("could not watch '.'"));
-		strbuf_release(&buf);
-		trace2_region_leave("fsmonitor", "inotify", the_repository);
-		return state;
-	}
 
 	trace2_printf("Start watching: '%s' for inotify", get_git_work_tree());
 
-	while (data.fd_inotify >= 0) {
+	for (;;) {
 		struct fsmonitor_queue_item dummy, *queue = &dummy;
 		uint64_t time = getnanotime();
 		char b[sizeof(struct inotify_event) + NAME_MAX + 1], *p;
-		int ret = read(data.fd_inotify, &b, sizeof(b)), i;
+		int i;
 
+		pollfd[0].fd = data->fd_wait_shutdown;
+		pollfd[0].events = POLLIN;
+
+		pollfd[1].fd = data->fd_inotify;
+		pollfd[1].events = POLLIN;
+
+		if (poll(pollfd, 2, -1) < 0) {
+			if (errno = EINTR)
+				continue;
+			error_errno(_("could not poll for notifications"));
+			goto force_error_stop;
+		}
+
+		if (pollfd[0].revents & POLLIN) {
+			/* shutdown message queued to socketpair */
+			goto shutdown_event;
+		}
+
+		assert((pollfd[1].revents & POLLIN) != 0);
+
+		ret = read(data->fd_inotify, &b, sizeof(b));
 		if (ret < 0) {
-
-			// TODO Guard this (and perhaps the above read() call
-			// TODO from the case where (data.fd_inotify == -1) because
-			// TODO another thread called fsmonitor_listen_stop()
-			// TODO (with or without any locking) and closed the
-			// TODO fd.
-			//
-			// TODO investigate the locking around access to data.fd_inotify.
-			//
 			error_errno(_("could not read() inotify fd"));
-			goto out;
+			goto force_error_stop;
 		}
 
 		/* Ensure strictly increasing timestamps */
@@ -192,47 +296,49 @@ struct fsmonitor_daemon_state *fsmonitor_listen(
 			if (!e->len)
 				continue;
 
-			pos = kh_get_wd2path(data.wd2path, e->wd);
+			pos = kh_get_wd2path(data->wd2path, e->wd);
 			if (!pos)
 				continue;
 
 			strbuf_reset(&buf);
-			strbuf_addf(&buf, "%s%s", kh_value(data.wd2path, pos),
+			strbuf_addf(&buf, "%s%s", kh_value(data->wd2path, pos),
 				    e->name);
 
 			if ((e->mask & dir_created) == dir_created) {
 				strbuf_complete(&buf, '/');
 				if (watch_directory(state, buf.buf) < 0)
-					goto out;
+					goto force_error_stop;
 			}
 
 			if ((e->mask & dir_deleted) == dir_deleted) {
 				if (unwatch_directory(state, buf.buf) < 0) {
 					error_errno(_("could not unwatch '%s'"),
 						    buf.buf);
-					goto out;
+					goto force_error_stop;
 				}
 			}
 
 			special = fsmonitor_special_path(
 				state, buf.buf, buf.len, e->mask & deleted);
 
-			if (!special &&
-			    fsmonitor_queue_path(state, &queue, buf.buf,
-						 buf.len, time) < 0) {
-				state->error_code = -1;
-				error("could not queue '%s'; exiting", buf.buf);
-				goto out;
+			if (special > 0) {
+				/* ignore paths inside of .git/ */
+			}
+			else if (!special) {
+				/* try to queue normal pathname */
+				if (fsmonitor_queue_path(state, &queue, buf.buf,
+							 buf.len, time) < 0) {
+					error("could not queue '%s'; exiting", buf.buf);
+					goto force_error_stop;
+				}
 			} else if (special == FSMONITOR_DAEMON_QUIT) {
-				trace2_region_leave("fsmonitor", "inotify",
-						    the_repository);
+				/* .git directory deleted (or renamed away) */
 				trace2_data_string(
 					"fsmonitor", the_repository, "message",
 					".git directory was removed; quitting");
-				exit(0);
-			} else if (special < 0) {
-				error(_("problem with path '%s'"), buf.buf);
-				goto out;
+				goto force_shutdown;
+			} else {
+				BUG("special %d < 0 for '%s'", special, buf.buf);
 			}
 		}
 
@@ -254,36 +360,19 @@ struct fsmonitor_daemon_state *fsmonitor_listen(
 		string_list_clear(&state->cookie_list, 0);
 	}
 
-out:
-	if (kh_size(data.path2wd) > 0) {
-		const char *path;
-		int wd;
+force_error_stop:
+	state->error_code = -1;
 
-		kh_foreach(data.path2wd, path, wd, {
-			free((char *)path);
-			if (data.fd_inotify >= 0)
-				inotify_rm_watch(data.fd_inotify, wd);
-		});
-	}
-	kh_release_path2wd(data.path2wd);
-	kh_release_wd2path(data.wd2path);
-	if (data.fd_inotify >= 0) {
-		close(data.fd_inotify);
-		data.fd_inotify = -1;
-	}
+force_shutdown:
+	/*
+	 * Tell the IPC thead pool to stop (which completes the await
+	 * in the main thread (which will also signal this thread (if
+	 * we are still alive))).
+	 */
+	ipc_server_stop_async(state->ipc_server_data);
+
+shutdown_event:
 	strbuf_release(&buf);
-	fsmonitor_listen_stop(state);
-	trace2_region_leave("fsmonitor", "inotify", the_repository);
-	return state;
+	return;
 }
 
-int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
-{
-	struct fsmonitor_daemon_backend_data *data = state->backend_data;
-
-	error(_("fsmonitor was told to stop"));
-	close(data->fd_inotify);
-	data->fd_inotify = -1;
-
-	return 0;
-}
