@@ -391,7 +391,7 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 
 	trace2_thread_start("fsm-listen");
 
-	fsmonitor_listen(state);
+	fsmonitor_listen__loop(state);
 
 	trace2_thread_exit();
 	return NULL;
@@ -410,10 +410,9 @@ static int fsmonitor_run_daemon(void)
 
 	state.error_code = 0;
 	state.latest_update = getnanotime();
-#ifdef GIT_WINDOWS_NATIVE
-	state.hListener[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
-	state.hListener[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
-#endif
+
+	if (fsmonitor_listen__ctor(&state))
+		return error(_("could not initialize listener thread"));
 
 	/*
 	 * Start the IPC thread pool before the we've started the file
@@ -430,10 +429,8 @@ static int fsmonitor_run_daemon(void)
 				 &state)) {
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
-#ifdef GIT_WINDOWS_NATIVE
-		CloseHandle(state.hListener[0]);
-		CloseHandle(state.hListener[1]);
-#endif
+		fsmonitor_listen__dtor(&state);
+
 		return error(_("could not start IPC thread pool"));
 	}
 
@@ -449,10 +446,8 @@ static int fsmonitor_run_daemon(void)
 
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
-#ifdef GIT_WINDOWS_NATIVE
-		CloseHandle(state.hListener[0]);
-		CloseHandle(state.hListener[1]);
-#endif
+		fsmonitor_listen__dtor(&state);
+
 		return error(_("could not start fsmonitor listener thread"));
 	}
 
@@ -463,24 +458,20 @@ static int fsmonitor_run_daemon(void)
 	 */
 	ipc_server_await(state.ipc_server_data);
 
-	fsmonitor_listen_stop(&state);
+	/*
+	 * The fsmonitor listener thread may have received a shutdown
+	 * event from the IPC thread pool, but it doesn't hurt to tell
+	 * it again.  And wait for it to shutdown.
+	 */
+	fsmonitor_listen__stop_async(&state);
 	pthread_join(state.watcher_thread, NULL);
 
 	ipc_server_free(state.ipc_server_data);
 
 	pthread_mutex_destroy(&state.cookies_lock);
 	pthread_mutex_destroy(&state.queue_update_lock);
-#ifdef GIT_WINDOWS_NATIVE
-	CloseHandle(state.hListener[0]);
-	CloseHandle(state.hListener[1]);
-#endif
+	fsmonitor_listen__dtor(&state);
 
-	/*
-	 * TODO What error code should our daemon return if/when our
-	 * TODO listener thread encounters a hard filesystem error and
-	 * TODO terminates (rather than getting asked to shutdown) ?
-	 * TODO This is perhaps an arbitrary choice.
-	 */
 	return state.error_code;
 }
 
