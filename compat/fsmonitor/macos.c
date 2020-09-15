@@ -282,12 +282,6 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 	if (!FSEventStreamStart(stream))
 		die("Failed to start the FSEventStream");
 
-	pthread_mutex_lock(&state->initial_mutex);
-	state->latest_update = getnanotime();
-	state->initialized = 1;
-	pthread_cond_signal(&state->initial_cond);
-	pthread_mutex_unlock(&state->initial_mutex);
-
 	CFRunLoopRun();
 
 	trace2_region_leave("fsmonitor", "fsevents", the_repository);

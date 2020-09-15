@@ -152,12 +152,6 @@ struct fsmonitor_daemon_state *fsmonitor_listen(
 
 	trace2_printf("Start watching: '%s' for inotify", get_git_work_tree());
 
-	pthread_mutex_lock(&state->initial_mutex);
-	state->latest_update = getnanotime();
-	state->initialized = 1;
-	pthread_cond_signal(&state->initial_cond);
-	pthread_mutex_unlock(&state->initial_mutex);
-
 	while (data.fd >= 0) {
 		struct fsmonitor_queue_item dummy, *queue = &dummy;
 		uint64_t time = getnanotime();
