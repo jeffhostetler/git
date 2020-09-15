@@ -84,8 +84,10 @@ static int watch_directory_recursively(struct fsmonitor_daemon_state *state,
 
 			strbuf_addstr(path, de->d_name);
 			strbuf_complete(path, '/');
-			if (watch_directory_recursively(state, path) < 0)
+			if (watch_directory_recursively(state, path) < 0) {
+				closedir(dir);
 				return -1;
+			}
 			strbuf_setlen(path, save);
 		}
 	}
