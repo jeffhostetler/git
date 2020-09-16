@@ -97,8 +97,21 @@ void FSEventStreamRelease(FSEventStreamRef stream);
 #include "cache.h"
 #include "fsmonitor.h"
 
-static struct strbuf watch_dir = STRBUF_INIT;
-static FSEventStreamRef stream;
+struct fsmonitor_daemon_backend_data
+{
+	struct strbuf watch_dir;
+	FSEventStreamRef stream;
+	CFStringRef watch_path;
+	CFArrayRef paths_to_watch;
+
+	CFRunLoopRef rl;
+
+	enum shutdown_style {
+		SHUTDOWN_EVENT = 0,
+		FORCE_SHUTDOWN,
+		FORCE_ERROR_STOP,
+	} shutdown_style;
+};
 
 static void log_flags_set(const char *path, const FSEventStreamEventFlags flag) {
 	struct strbuf msg = STRBUF_INIT;
@@ -168,6 +181,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	struct fsmonitor_queue_item dummy, *queue = &dummy;
 	uint64_t time = getnanotime();
 	struct fsmonitor_daemon_state *state = ctx;
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
 
 	/* Ensure strictly increasing timestamps */
 	pthread_mutex_lock(&state->queue_update_lock);
@@ -177,7 +191,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 
 	for (i = 0; i < num_of_events; i++) {
 		int special;
-		const char *path = paths[i] + watch_dir.len;
+		const char *path = paths[i] + data->watch_dir.len;
 		size_t len = strlen(path);
 
 		if (*path == '/') {
@@ -185,9 +199,10 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			len--;
 		}
 
-		special = fsmonitor_special_path(state, path, len,
-						 (event_flags[i] & (kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagItemRemoved)) &&
-						 lstat(paths[i], &st));
+		special = fsmonitor_special_path(
+			state, path, len,
+			(event_flags[i] & (kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagItemRemoved)) &&
+			lstat(paths[i], &st));
 
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
@@ -195,38 +210,42 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			fsmonitor_queue_path(state, &queue, "/", 1, time);
 		}
 
-		if (!special) {
+		if (special > 0) {
+			/* ignore paths inside of .git/ */
+		}
+		else if (!special) {
+			/* try to queue normal pathname */
 			log_flags_set(path, event_flags[i]);
 
 			/* TODO: fsevent could be marked as both a file and directory */
 			if ((event_flags[i] & kFSEventStreamEventFlagItemIsFile) &&
 			    fsmonitor_queue_path(state, &queue, path, len, time) < 0) {
-				state->error_code = -1;
-				error("could not queue '%s'; exiting",
-				      path);
-				fsmonitor_listen_stop(state);
+				error("could not queue '%s'; exiting", path);
+				data->shutdown_style = FORCE_ERROR_STOP;
+				CFRunLoopStop(data->rl);
 				return;
 			} else if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
 				char *p = xstrfmt("%s/", path);
 				if (fsmonitor_queue_path(state, &queue,
 							 p, len + 1,
 							 time) < 0) {
-					state->error_code = -1;
-					error("could not queue '%s'; exiting",
-					      p);
+					error("could not queue '%s'; exiting", p);
+					data->shutdown_style = FORCE_ERROR_STOP;
 					free(p);
-					fsmonitor_listen_stop(state);
+					CFRunLoopStop(data->rl);
 					return;
 				}
 				free(p);
 			}
 		} else if (special == FSMONITOR_DAEMON_QUIT) {
-			trace2_data_string("fsmonitor", the_repository, "message", ".git directory being removed so quitting.");
-			exit(0);
-
-		} else if (special < 0) {
-			fsmonitor_listen_stop(state);
+			/* .git directory deleted (or renamed away) */
+			trace2_data_string("fsmonitor", the_repository,
+					   "message", ".git directory being removed so quitting.");
+			data->shutdown_style = FORCE_SHUTDOWN;
+			CFRunLoopStop(data->rl);
 			return;
+		} else if (special < 0) {
+			BUG("special %d < 0 for '%s'", special, path);
 		}
 	}
 
@@ -248,17 +267,11 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	string_list_clear(&state->cookie_list, 0);
 }
 
-// TODO Don't call die() in a thead-proc.  Rather, return and let the
-// TODO normal cleanup happen (such as deleting unix domain sockets on
-// TODO the disk).
-//
-struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *state)
+int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 {
 	FSEventStreamCreateFlags flags = kFSEventStreamCreateFlagNoDefer |
 		kFSEventStreamCreateFlagWatchRoot |
 		kFSEventStreamCreateFlagFileEvents;
-	CFStringRef watch_path;
-	CFArrayRef paths_to_watch;
 	FSEventStreamContext ctx = {
 		0,
 		state,
@@ -266,33 +279,99 @@ struct fsmonitor_daemon_state *fsmonitor_listen(struct fsmonitor_daemon_state *s
 		NULL,
 		NULL
 	};
+	struct fsmonitor_daemon_backend_data *data;
 
-	trace2_region_enter("fsmonitor", "fsevents", the_repository);
-	strbuf_addstr(&watch_dir, get_git_work_tree());
-	trace2_printf("Start watching: '%s' for fsevents", watch_dir.buf);
+	data = xcalloc(1, sizeof(*data));
+	state->backend_data = data;
 
-	watch_path = CFStringCreateWithCString(NULL, watch_dir.buf, kCFStringEncodingUTF8);
-	paths_to_watch = CFArrayCreate(NULL, (const void **)&watch_path, 1, NULL);
-	stream = FSEventStreamCreate(NULL, fsevent_callback, &ctx, paths_to_watch,
+	strbuf_init(&data->watch_dir, 0);
+	strbuf_addstr(&data->watch_dir, get_git_work_tree());
+
+	data->watch_path = CFStringCreateWithCString(NULL, data->watch_dir.buf, kCFStringEncodingUTF8);
+	data->paths_to_watch = CFArrayCreate(NULL, (const void **)&data->watch_path, 1, NULL);
+	data->stream = FSEventStreamCreate(NULL, fsevent_callback, &ctx, data->paths_to_watch,
 				     kFSEventStreamEventIdSinceNow, 0.1, flags);
-	if (stream == NULL)
-		die("Unable to create FSEventStream.");
+	if (data->stream == NULL)
+		goto failed;
 
-	FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-	if (!FSEventStreamStart(stream))
-		die("Failed to start the FSEventStream");
+	/*
+	 * `data->rl` needs to be set inside the listener thread.
+	 */
+
+	return 0;
+
+failed:
+	error("Unable to create FSEventStream.");
+	strbuf_release(&data->watch_dir);
+	// TODO destroy data->{watch_path,paths_to_watch} ??
+	FREE_AND_NULL(state->backend_data);
+	return -1;
+}
+
+void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+
+	if (!state || !state->backend_data)
+		return;
+
+	data = state->backend_data;
+
+	strbuf_release(&data->watch_dir);
+	// TODO destroy data->{watch_path,paths_to_watch} ??
+
+	if (data->stream) {
+		FSEventStreamStop(data->stream);
+		FSEventStreamInvalidate(data->stream);
+		FSEventStreamRelease(data->stream);
+	}
+
+	FREE_AND_NULL(state->backend_data);
+}
+
+void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+
+	data = state->backend_data;
+	data->shutdown_style = SHUTDOWN_EVENT;
+
+	CFRunLoopStop(data->rl);
+}
+
+void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data;
+
+	data = state->backend_data;
+
+	trace2_printf("Start watching: '%s' for fsevents", data->watch_dir.buf);
+
+	data->rl = CFRunLoopGetCurrent();
+
+	FSEventStreamScheduleWithRunLoop(data->stream, data->rl, kCFRunLoopDefaultMode);
+	if (!FSEventStreamStart(data->stream)) {
+		error("Failed to start the FSEventStream");
+		goto force_error_stop_without_loop;
+	}
 
 	CFRunLoopRun();
 
-	trace2_region_leave("fsmonitor", "fsevents", the_repository);
-	return state;
-}
+	switch (data->shutdown_style) {
+	case FORCE_ERROR_STOP:
+		state->error_code = -1;
+		/* fall thru */
+	case FORCE_SHUTDOWN:
+		ipc_server_stop_async(state->ipc_server_data);
+		/* fall thru */
+	case SHUTDOWN_EVENT:
+	default:
+		break;
+	}
+	return;
 
-int fsmonitor_listen_stop(struct fsmonitor_daemon_state *state)
-{
-	CFRunLoopStop(CFRunLoopGetCurrent());
-	FSEventStreamStop(stream);
-	FSEventStreamInvalidate(stream);
-	FSEventStreamRelease(stream);
-	return 0;
+force_error_stop_without_loop:
+	state->error_code = -1;
+	ipc_server_stop_async(state->ipc_server_data);
+	return;
 }
