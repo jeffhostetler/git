@@ -199,6 +199,14 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			len--;
 		}
 
+		// TODO I think we should cut this apart and only do the event_flags[] tests
+		// TODO when we know the path is ".git" or ".git/" -- rather than always
+		// TODO doing the lstat() and then only using the result IFF the path matches.
+		// TODO
+		// TODO The test (...RootChanged | ...ItemRemoved) handles deletes of .git
+		// TODO but not rename-away.  For that we should look at (0x20800) (and maybe
+		// TODO not both with the lstat()) -- see "t7527: implicit2 ... (rename .git)"
+		//
 		special = fsmonitor_special_path(
 			state, path, len,
 			(event_flags[i] & (kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagItemRemoved)) &&
