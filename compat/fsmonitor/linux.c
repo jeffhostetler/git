@@ -259,7 +259,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 		pollfd[1].events = POLLIN;
 
 		if (poll(pollfd, 2, -1) < 0) {
-			if (errno = EINTR)
+			if (errno == EINTR)
 				continue;
 			error_errno(_("could not poll for notifications"));
 			goto force_error_stop;
