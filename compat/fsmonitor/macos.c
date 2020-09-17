@@ -168,6 +168,25 @@ static void log_flags_set(const char *path, const FSEventStreamEventFlags flag) 
 	strbuf_release(&msg);
 }
 
+static int ef_is_root_delete(const FSEventStreamEventFlags ef)
+{
+	// TODO The original fsmonitor_special_path() version used
+	// TODO (ef & (kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagItemRemoved))
+	// TODO but my testing is not showing that ...RootChanged is set
+	// TODO when the .git directory is deleted.  So I wonder what
+	// TODO circumstances cause that bit to be set.  I'm going to
+	// TODO ignore it for now.
+
+	return (ef & kFSEventStreamEventFlagItemIsDir &&
+		ef & kFSEventStreamEventFlagItemRemoved);
+}
+
+static int ef_is_root_renamed(const FSEventStreamEventFlags ef)
+{
+	return (ef & kFSEventStreamEventFlagItemIsDir &&
+		ef & kFSEventStreamEventFlagItemRenamed);
+}
+
 static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			     void *ctx,
 			     size_t num_of_events,
@@ -176,7 +195,6 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			     const FSEventStreamEventId event_ids[])
 {
 	int i;
-	struct stat st;
 	char **paths = (char **)event_paths;
 	struct fsmonitor_queue_item dummy, *queue = &dummy;
 	uint64_t time = getnanotime();
@@ -190,7 +208,6 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	pthread_mutex_unlock(&state->queue_update_lock);
 
 	for (i = 0; i < num_of_events; i++) {
-		int special;
 		const char *path = paths[i] + data->watch_dir.len;
 		size_t len = strlen(path);
 
@@ -199,30 +216,46 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			len--;
 		}
 
-		// TODO I think we should cut this apart and only do the event_flags[] tests
-		// TODO when we know the path is ".git" or ".git/" -- rather than always
-		// TODO doing the lstat() and then only using the result IFF the path matches.
-		// TODO
-		// TODO The test (...RootChanged | ...ItemRemoved) handles deletes of .git
-		// TODO but not rename-away.  For that we should look at (0x20800) (and maybe
-		// TODO not both with the lstat()) -- see "t7527: implicit2 ... (rename .git)"
-		//
-		special = fsmonitor_special_path(
-			state, path, len,
-			(event_flags[i] & (kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagItemRemoved)) &&
-			lstat(paths[i], &st));
-
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
 			trace2_data_string("fsmonitor", the_repository, "message", "Dropped event");
 			fsmonitor_queue_path(state, &queue, "/", 1, time);
 		}
 
-		if (special > 0) {
-			/* ignore paths inside of .git/ */
-		}
-		else if (!special) {
-			/* try to queue normal pathname */
+		switch (fsmonitor_classify_path(path, len)) {
+		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
+			/* special case cookie files within .git/ */
+			string_list_append(&state->cookie_list, path + 5);
+			break;
+
+		case IS_INSIDE_DOT_GIT:
+			/* ignore all other paths inside of .git/ */
+			break;
+
+		case IS_DOT_GIT:
+			/*
+			 * If .git directory is deleted or renamed away,
+			 * we have to quit.
+			 */
+			if (ef_is_root_delete(event_flags[i])) {
+				trace2_data_string("fsmonitor", NULL, "message",
+						   ".git directory deleted; quiting");
+				data->shutdown_style = FORCE_SHUTDOWN;
+				CFRunLoopStop(data->rl);
+				return;
+			}
+			if (ef_is_root_renamed(event_flags[i])) {
+				trace2_data_string("fsmonitor", NULL, "message",
+						   ".git directory renamed; quiting");
+				data->shutdown_style = FORCE_SHUTDOWN;
+				CFRunLoopStop(data->rl);
+				return;
+			}
+			break;
+
+		case IS_WORKTREE_PATH:
+		default:
+			/* try to queue normal pathnames */
 			log_flags_set(path, event_flags[i]);
 
 			/* TODO: fsevent could be marked as both a file and directory */
@@ -245,15 +278,8 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 				}
 				free(p);
 			}
-		} else if (special == FSMONITOR_DAEMON_QUIT) {
-			/* .git directory deleted (or renamed away) */
-			trace2_data_string("fsmonitor", the_repository,
-					   "message", ".git directory being removed so quitting.");
-			data->shutdown_style = FORCE_SHUTDOWN;
-			CFRunLoopStop(data->rl);
-			return;
-		} else if (special < 0) {
-			BUG("special %d < 0 for '%s'", special, path);
+
+			break;
 		}
 	}
 

@@ -287,7 +287,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 		for (p = b; ret > 0; ) {
 			const struct inotify_event *e = (void *)p;
 			size_t incr = sizeof(struct inotify_event) + e->len;
-			int special;
 			khint_t pos;
 
 			p += incr;
@@ -318,27 +317,35 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 				}
 			}
 
-			special = fsmonitor_special_path(
-				state, buf.buf, buf.len, e->mask & deleted);
+			switch (fsmonitor_classify_path(buf.buf, buf.len)) {
+			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
+				/* special case cookie files within .git/ */
+				string_list_append(&state->cookie_list, buf.buf + 5);
+				break;
 
-			if (special > 0) {
-				/* ignore paths inside of .git/ */
-			}
-			else if (!special) {
-				/* try to queue normal pathname */
+			case IS_INSIDE_DOT_GIT:
+				/* ignore all other paths inside of .git/ */
+				break;
+
+			case IS_DOT_GIT:
+				/* .git directory deleted (or renamed away) */
+				if (e->mask & deleted) {
+					trace2_data_string(
+						"fsmonitor", NULL, "message",
+						".git directory was removed; quitting");
+					goto force_shutdown;
+				}
+				break;
+
+			case IS_WORKTREE_PATH:
+			default:
+				/* try to queue normal pathnames */
 				if (fsmonitor_queue_path(state, &queue, buf.buf,
 							 buf.len, time) < 0) {
 					error("could not queue '%s'; exiting", buf.buf);
 					goto force_error_stop;
 				}
-			} else if (special == FSMONITOR_DAEMON_QUIT) {
-				/* .git directory deleted (or renamed away) */
-				trace2_data_string(
-					"fsmonitor", the_repository, "message",
-					".git directory was removed; quitting");
-				goto force_shutdown;
-			} else {
-				BUG("special %d < 0 for '%s'", special, buf.buf);
+				break;
 			}
 		}
 

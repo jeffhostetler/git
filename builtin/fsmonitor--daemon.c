@@ -314,33 +314,18 @@ static int paths_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->path, keydata ? keydata : b->path);
 }
 
-/*
- * FSMonitor never wants to return information on paths within ".git"
- * to the client.  However, FSMonitor internally uses the creation of
- * a cookie file inside ".git" to better sync up with filesystem events,
- * so we handle that separately.
- *
- * If/when ".git" or ".git/" is deleted we force a shutdown of the
- * fsmonitor listener thread.
- *
- * On platforms using Unix domain sockets, the IPC layer watches for
- * deletes of the socket pathname, so we don't have to consider them
- * as special paths here.
- */
-int fsmonitor_special_path(struct fsmonitor_daemon_state *state,
-			   const char *path, size_t len, int was_deleted)
+enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len)
 {
 	if (len < 4 || fspathncmp(path, ".git", 4) || (path[4] && path[4] != '/'))
-		return 0;
+		return IS_WORKTREE_PATH;
 
-	if (was_deleted && (len == 4 || len == 5))
-		return FSMONITOR_DAEMON_QUIT;
+	if (len == 4 || len == 5)
+		return IS_DOT_GIT;
 
-	if (!was_deleted && len > 4 &&
-	    starts_with(path + 5, FSMONITOR_COOKIE_PREFIX))
-		string_list_append(&state->cookie_list, path + 5);
+	if (len > 4 && starts_with(path + 5, FSMONITOR_COOKIE_PREFIX))
+		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
 
-	return 1;
+	return IS_INSIDE_DOT_GIT;
 }
 
 static int cookies_cmp(const void *data, const struct hashmap_entry *he1,

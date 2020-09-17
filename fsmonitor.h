@@ -144,19 +144,15 @@ struct fsmonitor_daemon_state {
 void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
 				   const char *cookie_name);
 
-/*
- * Handle special paths. Returns
- *
- * - 0 if the path is not special,
- *
- * - >0 if it should not be queued (e.g. because it is inside `.git/`),
- *
- * - FSMONITOR_DAEMON_QUIT if the daemon was asked to quit, and
- *
- * - other negative values in case of error.
- */
-int fsmonitor_special_path(struct fsmonitor_daemon_state *state,
-			   const char *path, size_t len, int was_deleted);
+enum fsmonitor_path_type {
+	IS_WORKTREE_PATH = 0,
+	IS_DOT_GIT,
+	IS_INSIDE_DOT_GIT,
+	IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX,
+};
+
+enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
+
 #define FSMONITOR_DAEMON_QUIT -2
 
 /*
