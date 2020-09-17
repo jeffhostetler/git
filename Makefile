@@ -473,7 +473,8 @@ all::
 #
 # If your platform supports an internal fsmonitor backend, set
 # FSMONITOR_DAEMON_BACKEND to the name of the corresponding
-# `compat/fsmonitor/<name>.c` that implements `fsmonitor_listen()`.
+# `compat/fsmonitor/fsmonitor_<name>.c` that implements the
+# `fsmonitor_listen__*()` routines.
 #
 # Define DEVELOPER to enable more compiler warnings. Compiler version
 # and family are auto detected, but could be overridden by defining
@@ -1903,7 +1904,7 @@ endif
 
 ifdef FSMONITOR_DAEMON_BACKEND
 	COMPAT_CFLAGS += -DHAVE_FSMONITOR_DAEMON_BACKEND
-	COMPAT_OBJS += compat/fsmonitor/$(FSMONITOR_DAEMON_BACKEND).o
+	COMPAT_OBJS += compat/fsmonitor/fsmonitor_$(FSMONITOR_DAEMON_BACKEND).o
 endif
 
 ifeq ($(TCLTK_PATH),)
