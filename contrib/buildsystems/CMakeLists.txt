@@ -242,6 +242,17 @@ else()
 	list(APPEND compat_SOURCES compat/simple-ipc/shared.c compat/simple-ipc/unix-socket.c)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	add_compile_definitions(HAVE_FSMONITOR_DAEMON_BACKEND)
+	list(APPEND compat_SOURCES compat/fsmonitor/fsmonitor_win32.c)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	add_compile_definitions(HAVE_FSMONITOR_DAEMON_BACKEND)
+	list(APPEND compat_SOURCES compat/fsmonitor/fsmonitor_macos.c)
+else()
+	add_compile_definitions(HAVE_FSMONITOR_DAEMON_BACKEND)
+	list(APPEND compat_SOURCES compat/fsmonitor/fsmonitor_linux.c)
+endif()
+
 set(EXE_EXTENSION ${CMAKE_EXECUTABLE_SUFFIX})
 
 #header checks
