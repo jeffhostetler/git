@@ -87,16 +87,6 @@ test_expect_success 'cannot start multiple daemons' '
 	test_must_fail git -C test_multiple fsmonitor--daemon --is-running
 '
 
-# Note, after "git reset --hard HEAD" no extensions exist other than 'TREE'
-# "git update-index --fsmonitor" can be used to get the extension written
-# before testing the results.
-
-clean_repo () {
-	git reset --hard HEAD &&
-	git clean -fd &&
-	>.git/trace
-}
-
 test_expect_success 'setup' '
 	>tracked &&
 	>modified &&
@@ -115,21 +105,38 @@ test_expect_success 'setup' '
 	mkdir dirtorename &&
 	>dirtorename/a &&
 	>dirtorename/b &&
-	git -c core.fsmonitor= add . &&
-	test_tick &&
-	git -c core.fsmonitor= commit -m initial &&
-	git config core.fsmonitor :internal: &&
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git update-index --fsmonitor &&
+
 	cat >.gitignore <<-\EOF &&
 	.gitignore
 	expect*
 	actual*
 	EOF
-	>.git/trace &&
-	echo 1 >modified &&
-	echo 2 >dir1/modified &&
-	echo 3 >dir2/modified &&
-	>dir1/untracked &&
+
+	git -c core.fsmonitor= add . &&
+	test_tick &&
+	git -c core.fsmonitor= commit -m initial &&
+
+	git config core.fsmonitor :internal:
+'
+
+test_expect_success 'update-index implicitly starts daemon' '
+	test_must_fail git fsmonitor--daemon --is-running &&
+
+	git update-index --fsmonitor &&
+
+	git fsmonitor--daemon --is-running &&
+
+	git fsmonitor--daemon --stop &&
+	test_must_fail git fsmonitor--daemon --is-running
+'
+
+test_expect_success 'status implicitly starts daemon' '
+	test_must_fail git fsmonitor--daemon --is-running &&
+
+	git status >actual &&
+
+	git fsmonitor--daemon --is-running &&
+
 	git fsmonitor--daemon --stop &&
 	test_must_fail git fsmonitor--daemon --is-running
 '
@@ -171,79 +178,145 @@ directory_to_file() {
 }
 
 verify_status() {
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git status >actual &&
-	GIT_INDEX=.git/fresh-index git read-tree master &&
-	GIT_INDEX=.git/fresh-index git -c core.fsmonitor= status >expect &&
-	test_cmp expect actual
+	git status >actual &&
+	GIT_INDEX_FILE=.git/fresh-index git read-tree master &&
+	GIT_INDEX_FILE=.git/fresh-index git -c core.fsmonitor= status >expect &&
+	test_cmp expect actual &&
+	echo HELLO AFTER &&
+	cat .git/trace &&
+	echo HELLO AFTER
 }
 
-test_expect_success 'internal fsmonitor works' '
-	verify_status &&
-	git fsmonitor--daemon --is-running
-'
+# The next few test cases confirm that our fsmonitor daemon sees each type
+# of OS filesystem notification that we care about.  At this layer we just
+# ensure we are getting the OS notifications and do not try to confirm what
+# is reported by `git status`.
+#
+# We put a `sleep 1` after the file operations we want to confirm to ensure
+# that the daemon has a chance to log the events to our trace log.  This
+# helps avoid false failures due to slow log buffer flushing by the daemon.
+#
+# We `reset` and `clean` at the bottom of each test (and before stopping the
+# daemon) because these commands might implicitly restart the daemon.
+#
+# TODO These tests rely on the trace2_data_string() call at
+# TODO fsmonitor--daemon.c:360 which should be guarded with a verbose or
+# TODO converted to a trace[1] message or guarded with a GIT_TEST_ symbol
+# TODO because we don't want every OS notification causing a trace2 event
+# TODO and clogging up the telemetry stream....
+#
+# TODO Same for the message in fsmonitor_macos.c:167.
 
 test_expect_success 'edit some files' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	edit_files &&
-	verify_status &&
-	grep :\"dir1/modified\" .git/trace &&
-	grep :\"dir2/modified\" .git/trace &&
-	grep :\"modified\" .git/trace &&
-	grep :\"dir1/untracked\" .git/trace
+	sleep 1 &&
+
+	grep :\"dir1/modified\"  .git/trace &&
+	grep :\"dir2/modified\"  .git/trace &&
+	grep :\"modified\"       .git/trace &&
+	grep :\"dir1/untracked\" .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'create some files' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	create_files &&
-	verify_status &&
+	sleep 1 &&
+
 	grep :\"dir1/new\" .git/trace &&
 	grep :\"dir2/new\" .git/trace &&
-	grep :\"new\" .git/trace
+	grep :\"new\"      .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'delete some files' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	delete_files &&
-	verify_status &&
+	sleep 1 &&
+
 	grep :\"dir1/delete\" .git/trace &&
 	grep :\"dir2/delete\" .git/trace &&
-	grep :\"delete\" .git/trace
+	grep :\"delete\"      .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'rename some files' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	rename_files &&
-	verify_status &&
-	grep :\"dir1/rename\" .git/trace &&
-	grep :\"dir2/rename\" .git/trace &&
-	grep :\"rename\" .git/trace &&
+	sleep 1 &&
+
+	grep :\"dir1/rename\"  .git/trace &&
+	grep :\"dir2/rename\"  .git/trace &&
+	grep :\"rename\"       .git/trace &&
 	grep :\"dir1/renamed\" .git/trace &&
 	grep :\"dir2/renamed\" .git/trace &&
-	grep :\"renamed\" .git/trace
+	grep :\"renamed\"      .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'rename directory' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	mv dirtorename dirrenamed &&
-	verify_status &&
+	sleep 1 &&
+
 	grep :\"dirtorename/*\" .git/trace &&
-	grep :\"dirrenamed/*\" .git/trace
+	grep :\"dirrenamed/*\"  .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
-
 test_expect_success 'file changes to directory' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	file_to_directory &&
-	verify_status &&
-	grep :\"delete\" .git/trace &&
-	grep :\"delete/new\" .git/trace
+	sleep 1 &&
+
+	grep :\"delete\"     .git/trace &&
+	grep :\"delete/new\" .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'directory changes to a file' '
-	clean_repo &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+
 	directory_to_file &&
-	verify_status &&
-	grep :\"dir1\" .git/trace
+	sleep 1 &&
+
+	grep :\"dir1\" .git/trace &&
+
+	git reset --hard HEAD &&
+	git clean -fd &&
+	git fsmonitor--daemon --stop &&
+	rm -f .git/trace
 '
 
 test_expect_success 'can stop internal fsmonitor' '
