@@ -202,9 +202,21 @@ static int handle_client(void *data, const char *command,
 
 	trace2_data_string("fsmonitor", the_repository, "command", command);
 
+	/*
+	 * We expect `command` to be of the form:
+	 *
+	 * <command> := quit NUL
+	 *            | <version> SP <since> NUL
+	 *
+	 * where:
+	 *   <version> is the protocol version number
+	 *   <since> is the timestamp in nanoseconds
+	 */
+
 	if (!strcmp(command, "quit")) {
 		/*
-		 * A client has requested that the daemon shutdown.
+		 * A client has requested over the socket/pipe that the
+		 * daemon shutdown.
 		 *
 		 * Tell the IPC thread pool to shutdown (which completes
 		 * the await in the main thread (which can stop the
@@ -219,27 +231,17 @@ static int handle_client(void *data, const char *command,
 	if (version != FSMONITOR_VERSION) {
 		error(_("fsmonitor: unhandled version (%lu, command: %s)"),
 		      version, command);
-error:
-		pthread_mutex_lock(&state->queue_update_lock);
-		strbuf_addf(&token, "%"PRIu64"", state->latest_update);
-		pthread_mutex_unlock(&state->queue_update_lock);
-
-		// TODO This code sends "<token> NUL <slash> NUL" using
-		// TODO 2 network writes.  We should assemble a buffer
-		// TODO and do it in 1 IO.  (We are already building a
-		// TODO token buffer.)
-
-		reply(reply_data, token.buf, token.len + 1);
-		trace2_data_string("fsmonitor", the_repository, "serve.token", token.buf);
-		reply(reply_data, "/", 2);
-		trace2_data_intmax("fsmonitor", the_repository, "serve.trivial", 1);
-		strbuf_release(&token);
-		trace2_region_leave("fsmonitor", "serve", the_repository);
-		return -1;
+		goto send_trivial_response;
 	}
+
 	while (isspace(*p))
 		p++;
 	since = strtoumax(p, &p, 10);
+
+	if (*p) {
+		error(_("fsmonitor: invalid command line '%s'"), command);
+		goto send_trivial_response;
+	}
 
 	/*
 	 * write out cookie file so the queue gets filled with all
@@ -248,12 +250,12 @@ error:
 	fsmonitor_wait_for_cookie(state);
 
 	pthread_mutex_lock(&state->queue_update_lock);
-	if (since < state->latest_update || *p) {
+	if (since < state->latest_update) {
+		volatile uintmax_t latest = state->latest_update;
 		pthread_mutex_unlock(&state->queue_update_lock);
-		error(_("fsmonitor: %s (%" PRIuMAX", command: %s, rest %s)"),
-		      *p ? "extra stuff" : "incorrect/early timestamp",
-		      since, command, p);
-		goto error;
+		error(_("fsmonitor: incorrect/early timestamp (since %" PRIuMAX")(latest %" PRIuMAX")"),
+		      since, latest);
+		goto send_trivial_response;
 	}
 
 	if (!state->latest_update)
@@ -301,6 +303,21 @@ error:
 	trace2_region_leave("fsmonitor", "serve", the_repository);
 
 	return 0;
+
+send_trivial_response:
+	pthread_mutex_lock(&state->queue_update_lock);
+	strbuf_addf(&token, "%"PRIu64"", state->latest_update);
+	pthread_mutex_unlock(&state->queue_update_lock);
+
+	reply(reply_data, token.buf, token.len + 1);
+	trace2_data_string("fsmonitor", the_repository, "serve.token", token.buf);
+	reply(reply_data, "/", 2);
+	trace2_data_intmax("fsmonitor", the_repository, "serve.trivial", 1);
+
+	strbuf_release(&token);
+	trace2_region_leave("fsmonitor", "serve", the_repository);
+
+	return -1;
 }
 
 static int paths_cmp(const void *data, const struct hashmap_entry *he1,
