@@ -207,7 +207,16 @@ verify_status() {
 #
 # TODO Same for the message in fsmonitor_macos.c:167.
 
+clean_up_repo_and_stop_daemon () {
+	git reset --hard HEAD
+	git clean -fd
+	git fsmonitor--daemon --stop
+	rm -f .git/trace
+}
+
 test_expect_success 'edit some files' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	edit_files &&
@@ -216,15 +225,12 @@ test_expect_success 'edit some files' '
 	grep :\"dir1/modified\"  .git/trace &&
 	grep :\"dir2/modified\"  .git/trace &&
 	grep :\"modified\"       .git/trace &&
-	grep :\"dir1/untracked\" .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"dir1/untracked\" .git/trace
 '
 
 test_expect_success 'create some files' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	create_files &&
@@ -232,15 +238,12 @@ test_expect_success 'create some files' '
 
 	grep :\"dir1/new\" .git/trace &&
 	grep :\"dir2/new\" .git/trace &&
-	grep :\"new\"      .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"new\"      .git/trace
 '
 
 test_expect_success 'delete some files' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	delete_files &&
@@ -248,15 +251,12 @@ test_expect_success 'delete some files' '
 
 	grep :\"dir1/delete\" .git/trace &&
 	grep :\"dir2/delete\" .git/trace &&
-	grep :\"delete\"      .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"delete\"      .git/trace
 '
 
 test_expect_success 'rename some files' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	rename_files &&
@@ -267,64 +267,42 @@ test_expect_success 'rename some files' '
 	grep :\"rename\"       .git/trace &&
 	grep :\"dir1/renamed\" .git/trace &&
 	grep :\"dir2/renamed\" .git/trace &&
-	grep :\"renamed\"      .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"renamed\"      .git/trace
 '
 
 test_expect_success 'rename directory' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	mv dirtorename dirrenamed &&
 	sleep 1 &&
 
 	grep :\"dirtorename/*\" .git/trace &&
-	grep :\"dirrenamed/*\"  .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"dirrenamed/*\"  .git/trace
 '
 
 test_expect_success 'file changes to directory' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	file_to_directory &&
 	sleep 1 &&
 
 	grep :\"delete\"     .git/trace &&
-	grep :\"delete/new\" .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
+	grep :\"delete/new\" .git/trace
 '
 
 test_expect_success 'directory changes to a file' '
+	test_when_finished "clean_up_repo_and_stop_daemon" &&
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
 
 	directory_to_file &&
 	sleep 1 &&
 
-	grep :\"dir1\" .git/trace &&
-
-	git reset --hard HEAD &&
-	git clean -fd &&
-	git fsmonitor--daemon --stop &&
-	rm -f .git/trace
-'
-
-test_expect_success 'can stop internal fsmonitor' '
-	if git fsmonitor--daemon --is-running
-	then
-		git fsmonitor--daemon --stop
-	fi &&
-	test_must_fail git fsmonitor--daemon --is-running
+	grep :\"dir1\" .git/trace
 '
 
 test_done
