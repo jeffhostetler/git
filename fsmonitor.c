@@ -406,6 +406,7 @@ int fsmonitor_query_daemon(const char *since, struct strbuf *answer)
 	trace2_region_enter("fsm_client", "query-daemon", NULL);
 
 	strbuf_addf(&command, "%ld %s", FSMONITOR_VERSION, since);
+	trace2_data_string("fsm_client", NULL, "query-daemon/command", command.buf);
 
 try_again:
 	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
