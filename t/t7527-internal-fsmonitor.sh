@@ -44,6 +44,15 @@ test_expect_success 'implicit daemon start and stop (delete .git)' '
 	# deleting the .git directory will implicitly stop the daemon.
 	rm -rf test_implicit/.git &&
 	sleep 1 &&
+
+	# Create an empty .git directory so that the following Git command
+	# will stay relative to the `-C` directory.  Without this, the Git
+	# command will (override the requested -C argument) and crawl out
+	# to the containing Git source tree.  This would make the test
+	# result dependent upon whether we were using fsmonitor on our
+	# development worktree.
+	mkdir test_implicit/.git &&
+
 	test_must_fail git -C test_implicit fsmonitor--daemon --is-running
 '
 
@@ -61,13 +70,17 @@ test_expect_success 'implicit2 daemon start and stop (rename .git)' '
 	git -C test_implicit2 fsmonitor--daemon --is-running &&
 
 	# renaming the .git directory will implicitly stop the daemon.
-	#
-	# (but we need to move it back so that the client will try to create a
-	# pathname to the well-known socket for the test (and not for the
-	# containing Git repo)).
 	mv test_implicit2/.git test_implicit2/.xxx &&
-	mv test_implicit2/.xxx test_implicit2/.git &&
 	sleep 1 &&
+
+	# Create an empty .git directory so that the following Git command
+	# will stay relative to the `-C` directory.  Without this, the Git
+	# command will (override the requested -C argument) and crawl out
+	# to the containing Git source tree.  This would make the test
+	# result dependent upon whether we were using fsmonitor on our
+	# development worktree.
+	mkdir test_implicit2/.git &&
+
 	test_must_fail git -C test_implicit2 fsmonitor--daemon --is-running
 '
 
