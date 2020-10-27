@@ -192,6 +192,10 @@ verify_status() {
 # ensure we are getting the OS notifications and do not try to confirm what
 # is reported by `git status`.
 #
+# We put a `sleep 1` immediately after starting the daemon to ensure that
+# it has a chance to start listening before we start creating FS events.
+# This is to help the PR/CI test runs to be less random.
+#
 # We put a `sleep 1` after the file operations we want to confirm to ensure
 # that the daemon has a chance to log the events to our trace log.  This
 # helps avoid false failures due to slow log buffer flushing by the daemon.
@@ -218,6 +222,7 @@ test_expect_success 'edit some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	edit_files &&
 	sleep 1 &&
@@ -232,6 +237,7 @@ test_expect_success 'create some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	create_files &&
 	sleep 1 &&
@@ -245,6 +251,7 @@ test_expect_success 'delete some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	delete_files &&
 	sleep 1 &&
@@ -258,6 +265,7 @@ test_expect_success 'rename some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	rename_files &&
 	sleep 1 &&
@@ -274,6 +282,7 @@ test_expect_success 'rename directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	mv dirtorename dirrenamed &&
 	sleep 1 &&
@@ -286,6 +295,7 @@ test_expect_success 'file changes to directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	file_to_directory &&
 	sleep 1 &&
@@ -298,6 +308,7 @@ test_expect_success 'directory changes to a file' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	sleep 1 &&
 
 	directory_to_file &&
 	sleep 1 &&
