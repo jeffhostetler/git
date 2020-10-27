@@ -88,7 +88,11 @@ int read_fsmonitor_extension(struct index_state *istate, const void *data,
 		BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" > %u)",
 		    (uintmax_t)istate->fsmonitor_dirty->bit_size, istate->cache_nr);
 
-	trace_printf_key(&trace_fsmonitor, "read fsmonitor extension successful");
+	trace_printf_key(&trace_fsmonitor,
+			 "read fsmonitor extension successful [v %d][last_update '%s'][bit_size %"PRIuMAX"]",
+			 hdr_version,
+			 istate->fsmonitor_last_update,
+			 (uintmax_t)istate->fsmonitor_dirty->bit_size);
 	return 0;
 }
 
@@ -110,11 +114,14 @@ void write_fsmonitor_extension(struct strbuf *sb, struct index_state *istate)
 	uint32_t ewah_start;
 	uint32_t ewah_size = 0;
 	int fixup = 0;
+	uintmax_t bit_size;
 
 	if (!istate->split_index &&
 	    istate->fsmonitor_dirty->bit_size > istate->cache_nr)
 		BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" > %u)",
 		    (uintmax_t)istate->fsmonitor_dirty->bit_size, istate->cache_nr);
+
+	bit_size = istate->fsmonitor_dirty->bit_size;
 
 	put_be32(&hdr_version, INDEX_EXTENSION_VERSION2);
 	strbuf_add(sb, &hdr_version, sizeof(uint32_t));
@@ -134,7 +141,9 @@ void write_fsmonitor_extension(struct strbuf *sb, struct index_state *istate)
 	put_be32(&ewah_size, sb->len - ewah_start);
 	memcpy(sb->buf + fixup, &ewah_size, sizeof(uint32_t));
 
-	trace_printf_key(&trace_fsmonitor, "write fsmonitor extension successful");
+	trace_printf_key(&trace_fsmonitor,
+			 "write fsmonitor extension successful [v %d][last_update '%s'][bit_size %"PRIuMAX"]",
+			 get_be32(&hdr_version), istate->fsmonitor_last_update, bit_size);
 }
 
 /*
