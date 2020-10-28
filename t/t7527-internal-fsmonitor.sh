@@ -28,49 +28,42 @@ test_expect_success 'explicit daemon start and stop' '
 	test_must_fail git -C test_explicit fsmonitor--daemon --is-running
 '
 
-test_expect_success 'implicit daemon start and stop (delete .git)' '
+test_expect_success 'implicit daemon start' '
 	test_when_finished "kill_repo test_implicit" &&
 
 	git init test_implicit &&
 	test_must_fail git -C test_implicit fsmonitor--daemon --is-running &&
 
 	# query will implicitly start the daemon.
-	git -C test_implicit fsmonitor--daemon --query 1 0 >actual &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace" \
+		git -C test_implicit fsmonitor--daemon --query 1 0 >actual &&
 	nul_to_q <actual >actual.filtered &&
 	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
-
-	git -C test_implicit fsmonitor--daemon --is-running &&
-
-	# deleting the .git directory will implicitly stop the daemon.
-	rm -rf test_implicit/.git &&
 	sleep 1 &&
 
-	# Create an empty .git directory so that the following Git command
-	# will stay relative to the `-C` directory.  Without this, the Git
-	# command will (override the requested -C argument) and crawl out
-	# to the containing Git source tree.  This would make the test
-	# result dependent upon whether we were using fsmonitor on our
-	# development worktree.
-	mkdir test_implicit/.git &&
+	# confirm that a daemon was started in the background.  since this
+	# could be an exec child with --start or --run (depending on the
+	# platform), just confirm that the foreground command received a
+	# response from the daemon.
+	grep :\"query-daemon/response-length\" .git/trace &&
 
+	git -C test_implicit fsmonitor--daemon --is-running &&
+	git -C test_implicit fsmonitor--daemon --stop &&
 	test_must_fail git -C test_implicit fsmonitor--daemon --is-running
 '
 
-test_expect_success 'implicit2 daemon start and stop (rename .git)' '
-	test_when_finished "kill_repo test_implicit2" &&
+test_expect_success 'implicit daemon stop (delete .git)' '
+	test_when_finished "kill_repo test_implicit_1" &&
 
-	git init test_implicit2 &&
-	test_must_fail git -C test_implicit2 fsmonitor--daemon --is-running &&
+	git init test_implicit_1 &&
 
-	# query will implicitly start the daemon.
-	git -C test_implicit2 fsmonitor--daemon --query 1 0 >actual &&
-	nul_to_q <actual >actual.filtered &&
-	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
+	git -C test_implicit_1 fsmonitor--daemon --start &&
+	sleep 1 &&
 
-	git -C test_implicit2 fsmonitor--daemon --is-running &&
+	git -C test_implicit_1 fsmonitor--daemon --is-running &&
 
-	# renaming the .git directory will implicitly stop the daemon.
-	mv test_implicit2/.git test_implicit2/.xxx &&
+	# deleting the .git directory will implicitly stop the daemon.
+	rm -rf test_implicit_1/.git &&
 	sleep 1 &&
 
 	# Create an empty .git directory so that the following Git command
@@ -79,9 +72,34 @@ test_expect_success 'implicit2 daemon start and stop (rename .git)' '
 	# to the containing Git source tree.  This would make the test
 	# result dependent upon whether we were using fsmonitor on our
 	# development worktree.
-	mkdir test_implicit2/.git &&
+	mkdir test_implicit_1/.git &&
 
-	test_must_fail git -C test_implicit2 fsmonitor--daemon --is-running
+	test_must_fail git -C test_implicit_1 fsmonitor--daemon --is-running
+'
+
+test_expect_success 'implicit daemon stop (rename .git)' '
+	test_when_finished "kill_repo test_implicit_2" &&
+
+	git init test_implicit_2 &&
+
+	git -C test_implicit_2 fsmonitor--daemon --start &&
+	sleep 1 &&
+
+	git -C test_implicit_2 fsmonitor--daemon --is-running &&
+
+	# renaming the .git directory will implicitly stop the daemon.
+	mv test_implicit_2/.git test_implicit_2/.xxx &&
+	sleep 1 &&
+
+	# Create an empty .git directory so that the following Git command
+	# will stay relative to the `-C` directory.  Without this, the Git
+	# command will (override the requested -C argument) and crawl out
+	# to the containing Git source tree.  This would make the test
+	# result dependent upon whether we were using fsmonitor on our
+	# development worktree.
+	mkdir test_implicit_2/.git &&
+
+	test_must_fail git -C test_implicit_2 fsmonitor--daemon --is-running
 '
 
 test_expect_success 'cannot start multiple daemons' '
