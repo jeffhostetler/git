@@ -154,6 +154,7 @@ test_expect_success 'update-index implicitly starts daemon' '
 	test_must_fail git fsmonitor--daemon --is-running &&
 
 	git update-index --fsmonitor &&
+	sleep 1 &&
 
 	git fsmonitor--daemon --is-running &&
 
@@ -165,6 +166,7 @@ test_expect_success 'status implicitly starts daemon' '
 	test_must_fail git fsmonitor--daemon --is-running &&
 
 	git status >actual &&
+	sleep 1 &&
 
 	git fsmonitor--daemon --is-running &&
 
