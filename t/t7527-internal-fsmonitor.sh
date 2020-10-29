@@ -36,7 +36,7 @@ test_expect_success 'implicit daemon start' '
 
 	# query will implicitly start the daemon.
 	GIT_TRACE2_EVENT="$PWD/.git/trace" \
-		git -C test_implicit fsmonitor--daemon --query 1 0 >actual &&
+		git -C test_implicit fsmonitor--daemon --query 0 >actual &&
 	nul_to_q <actual >actual.filtered &&
 	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
 	sleep 1 &&

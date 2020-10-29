@@ -399,9 +399,8 @@ void tweak_fsmonitor(struct index_state *istate)
 
 GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
 
-int fsmonitor_query_daemon(const char *since, struct strbuf *answer)
+int fsmonitor_query_daemon(const char *token, struct strbuf *answer)
 {
-	struct strbuf command = STRBUF_INIT;
 	int ret = -1;
 	int fd = -1;
 	int tried_to_spawn = 0;
@@ -414,15 +413,14 @@ int fsmonitor_query_daemon(const char *since, struct strbuf *answer)
 
 	trace2_region_enter("fsm_client", "query-daemon", NULL);
 
-	strbuf_addf(&command, "%ld %s", FSMONITOR_VERSION, since);
-	trace2_data_string("fsm_client", NULL, "query-daemon/command", command.buf);
+	trace2_data_string("fsm_client", NULL, "query-daemon/command", token);
 
 try_again:
 	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
 
 	switch (state) {
 	case IPC_STATE__LISTENING:
-		ret = ipc_client_send_command_to_fd(fd, command.buf, answer);
+		ret = ipc_client_send_command_to_fd(fd, token, answer);
 		close(fd);
 
 		trace2_data_intmax("fsm_client", NULL,
@@ -479,7 +477,6 @@ try_again:
 	}
 
 done:
-	strbuf_release(&command);
 	trace2_region_leave("fsm_client", "query-daemon", NULL);
 
 	return ret;

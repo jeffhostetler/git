@@ -14,14 +14,13 @@
 #include "khash.h"
 
 static const char * const builtin_fsmonitor__daemon_usage[] = {
-	N_("git fsmonitor--daemon [--query] <version> <timestamp>"),
+	N_("git fsmonitor--daemon [--query] <token>"),
 	N_("git fsmonitor--daemon <command-mode> [<options>...]"),
 	NULL
 };
 
 #ifndef HAVE_FSMONITOR_DAEMON_BACKEND
 #define FSMONITOR_DAEMON_IS_SUPPORTED 0
-#define FSMONITOR_VERSION 0l
 
 static int fsmonitor_query_daemon(const char *unused_since,
 				  struct strbuf *unused_answer)
@@ -191,7 +190,6 @@ static int handle_client(void *data, const char *command,
 			 struct ipc_server_reply_data *reply_data)
 {
 	struct fsmonitor_daemon_state *state = data;
-	unsigned long version;
 	uintmax_t since;
 	char *p;
 	struct fsmonitor_queue_item *queue;
@@ -206,11 +204,7 @@ static int handle_client(void *data, const char *command,
 	 * We expect `command` to be of the form:
 	 *
 	 * <command> := quit NUL
-	 *            | <version> SP <since> NUL
-	 *
-	 * where:
-	 *   <version> is the protocol version number
-	 *   <since> is the timestamp in nanoseconds
+	 *            | <opaque-fsmonitor-V2-token> NUL
 	 */
 
 	if (!strcmp(command, "quit")) {
@@ -227,16 +221,9 @@ static int handle_client(void *data, const char *command,
 
 	trace2_region_enter("fsmonitor", "serve", the_repository);
 
-	version = strtoul(command, &p, 10);
-	if (version != FSMONITOR_VERSION) {
-		error(_("fsmonitor: unhandled version (%lu, command: %s)"),
-		      version, command);
-		goto send_trivial_response;
-	}
-
-	while (isspace(*p))
-		p++;
-	since = strtoumax(p, &p, 10);
+	// TODO for now, assume the token is a timestamp.
+	// TODO fix this.
+	since = strtoumax(command, &p, 10);
 
 	if (*p) {
 		error(_("fsmonitor: invalid command line '%s'"), command);
@@ -556,32 +543,26 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		    fsmonitor__ipc_threads);
 
 	if (mode == QUERY) {
-
-		// TODO This could use a comment to clarify what's happening.
-		// TODO Using `fsmonitor--daemon --query` runs this .exe as a
-		// TODO client process and it either:
-		// TODO [1] connects to an *existing* daemon process
-		// TODO [2] starts a *new* daemon process in the background
-		// TODO     if it is not yet running
-		// TODO and asks it what it has cached in memory and then exits.
-		// TODO The (existing or new) daemon process presists.
-		// TODO
-		// TODO This is used by the test suite.
-
+		/*
+		 * Commands of the form `fsmonitor--daemon --query <token>`
+		 * cause this instance to behave as a CLIENT.  We connect to
+		 * the existing daemon process and ask it for the cached data.
+		 * We start a new daemon process in the background if one is
+		 * not already running.  In both cases, we leave the background
+		 * daemon running after we exit.
+		 *
+		 * This feature is primarily used by the test suite.
+		 *
+		 * <token> is an opaque "fsmonitor V2" token.
+		 */
 		struct strbuf answer = STRBUF_INIT;
 		int ret;
-		unsigned long version;
 
-		if (argc != 2)
+		if (argc != 1)
 			usage_with_options(builtin_fsmonitor__daemon_usage,
 					   options);
 
-		version = strtoul(argv[0], NULL, 10);
-		if (version != FSMONITOR_VERSION)
-			die(_("unhandled fsmonitor version %ld (!= %ld)"),
-			      version, FSMONITOR_VERSION);
-
-		ret = fsmonitor_query_daemon(argv[1], &answer);
+		ret = fsmonitor_query_daemon(argv[0], &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
 		write_in_full(1, answer.buf, answer.len);

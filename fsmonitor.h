@@ -80,7 +80,6 @@ static inline void mark_fsmonitor_invalid(struct index_state *istate, struct cac
 #include "thread-utils.h"
 
 extern const char *git_path_fsmonitor(void);
-#define FSMONITOR_VERSION 1ul
 
 int fsmonitor_query_daemon(const char *since, struct strbuf *answer);
 
