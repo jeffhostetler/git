@@ -156,16 +156,16 @@ static int query_fsmonitor(int version, const char *last_update, struct strbuf *
 	if (!core_fsmonitor)
 		return -1;
 
-	if (!strcmp(core_fsmonitor, ":internal:"))
+	if (!strcmp(core_fsmonitor, ":internal:")) {
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
 		return fsmonitor_query_daemon(last_update, query_result);
 #else
-	{
+		/* Fake a trivial response. */
 		warning(_("internal fsmonitor unavailable; falling back"));
 		strbuf_add(query_result, "/", 2);
 		return 0;
-	}
 #endif
+	}
 
 	strvec_push(&cp.args, core_fsmonitor);
 	strvec_pushf(&cp.args, "%d", version);
@@ -246,11 +246,12 @@ void refresh_fsmonitor(struct index_state *istate)
 					hook_version = HOOK_INTERFACE_VERSION2;
 
 				/*
-				 * First entry will be the last update token
+				 * First entry will be the last update token.
+				 *
 				 * Need to use a char * variable because static
 				 * analysis was suggesting to use strbuf_addbuf
 				 * but we don't want to copy the entire strbuf
-				 * only the chars up to the first NUL
+				 * only the chars up to the first NUL.
 				 */
 				buf = query_result.buf;
 				strbuf_addstr(&last_update_token, buf);
@@ -320,16 +321,44 @@ void refresh_fsmonitor(struct index_state *istate)
 	istate->fsmonitor_last_update = strbuf_detach(&last_update_token, NULL);
 }
 
+/*
+ * The caller wants to turn on FSMonitor.  And when the caller writes
+ * the index to disk, a FSMonitor extension should be included.  This
+ * requires that `istate->fsmonitor_last_update` not be NULL.  But we
+ * have not actually talked to a FSMonitor process yet, so we don't
+ * have an initial value for this field.
+ *
+ * For a protocol V1 FSMonitor process, this field is a formatted
+ * "nanoseconds since epoch" field.  However, for a protocol V2
+ * FSMonitor process, this field is an opaque token.
+ *
+ * Historically, `add_fsmonitor()` has initialized this field to the
+ * current time for protocol V1 processes.  There are lots of race
+ * conditions here, but that code has shipped...
+ *
+ * The only true solution is to use a V2 FSMonitor and get a current
+ * or default token value (that it understands), but we cannot do that
+ * right now.
+ *
+ * For simplicity, just initialize like we have a V1 process and require
+ * that V2 processes adapt.
+ */
+static void initialize_fsmonitor_last_update(struct index_state *istate)
+{
+	struct strbuf last_update = STRBUF_INIT;
+
+	strbuf_addf(&last_update, "%"PRIu64"", getnanotime());
+	istate->fsmonitor_last_update = strbuf_detach(&last_update, NULL);
+}
+
 void add_fsmonitor(struct index_state *istate)
 {
 	unsigned int i;
-	struct strbuf last_update = STRBUF_INIT;
 
 	if (!istate->fsmonitor_last_update) {
 		trace_printf_key(&trace_fsmonitor, "add fsmonitor");
 		istate->cache_changed |= FSMONITOR_CHANGED;
-		strbuf_addf(&last_update, "%"PRIu64"", getnanotime());
-		istate->fsmonitor_last_update = strbuf_detach(&last_update, NULL);
+		initialize_fsmonitor_last_update(istate);
 
 		/* reset the fsmonitor state */
 		for (i = 0; i < istate->cache_nr; i++)
@@ -451,15 +480,14 @@ try_again:
 		if (fsmonitor_spawn_daemon())
 			goto done;
 
-		// TODO One could argue that if we just successfully started
-		// TODO the daemon, it can't possibly have any FS events cached
-		// TODO yet, so we'll always get a trivial answer.  But we
-		// TODO allow it in case there are other command verbs, such
-		// TODO as a startup sequence number or something.
-
 		/*
 		 * Try again, but this time give the daemon a chance to
 		 * actually create the pipe/socket.
+		 *
+		 * Granted, the daemon just started so it can't possibly have
+		 * any FS cached yet, so we'll always get a trivial answer.
+		 * BUT the answer should include a new token that can serve
+		 * as the basis for subsequent requests.
 		 */
 		options.wait_if_not_found = 1;
 		goto try_again;

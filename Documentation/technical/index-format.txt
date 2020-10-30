@@ -306,6 +306,10 @@ The remaining data of each directory block is grouped by type:
 
   The extension starts with
 
+TODO
+TODO This only describes version 1 format.
+TODO
+
   - 32-bit version number: the current supported version is 1.
 
   - 64-bit time: the extension data reflects all changes through the given

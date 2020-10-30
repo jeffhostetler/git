@@ -1611,6 +1611,9 @@ int unpack_trees(unsigned len, struct tree_desc *t, struct unpack_trees_options 
 	o->merge_size = len;
 	mark_all_ce_unused(o->src_index);
 
+	// TODO Here we are borrowing the fsmonitor_last_update STRING.
+	// TODO Should we strdup() it instead ??
+	//
 	if (o->src_index->fsmonitor_last_update)
 		o->result.fsmonitor_last_update = o->src_index->fsmonitor_last_update;
 
