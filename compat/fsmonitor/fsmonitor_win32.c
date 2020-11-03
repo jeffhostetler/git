@@ -11,6 +11,105 @@ struct fsmonitor_daemon_backend_data
 #define LISTENER_HAVE_DATA 1
 };
 
+/*
+ * Requests to and from a FSMonitor Protocol V2 provider use an opaque
+ * "token" as a virtual timestamp.  Clients can request a summary of all
+ * created/deleted/modified files relative to a token.  In the response,
+ * clients receive a new token for the next (relative) request.
+ *
+ *
+ * Token Format
+ * ============
+ *
+ * The contents of the token are private and provider-specific.
+ *
+ * For the internal fsmonitor--daemon, we define a token as follows:
+ *
+ *     ":internal:" <session_id> ":" <sequence_nr>
+ *
+ * The <session_id> is an arbitrary OPAQUE string, such as a GUID,
+ * UUID, or {timestamp,pid}.  It is used to group all file system
+ * events that happened during the lifespan of an instance of the
+ * daemon.
+ *
+ *     Unlike FSMonitor Protocol V1, it is not defined as a timestamp
+ *     and does not define less-than/greater-than relationships.
+ *     (There are too many race conditions to rely on file system
+ *     event timestamps.)
+ *
+ * The <sequence_nr> is a simple integer incremented for each file
+ * system event received.  When a new <session_id> is created, the
+ * <sequence_nr> is reset.
+ *
+ *
+ * About Session Ids
+ * =================
+ *
+ * A new <session_id> is created each time the daemon is started.
+ *
+ * Token Reset(1): A new <session_id> is also created if the daemon
+ * loses sync with the file system notification mechanism.
+ *
+ * Token Reset(2): A new <session_id> MIGHT also be created when
+ * complex file system operations are performed.  For example, a
+ * directory rename/move/delete sequence that implicitly affects
+ * tracked files within.
+ *
+ * When the daemon resets the token <session_id>, it is free to
+ * discard all cached file system events.  By construction, a token
+ * reset means that the daemon cannot completely represent the set of
+ * file system changes and therefore cannot make any assurances to the
+ * client.
+ *
+ * Clients that present a token with a stale (non-current)
+ * <session_id> will always be given a trivial response.
+ */
+#if 0
+static void make_new_session_id(struct strbuf *buf_new_sid)
+{
+	static int test_env_value = -1;
+
+	strbuf_reset(buf_new_sid);
+
+	if (test_env_value < 0)
+		test_env_value = get_env_bool("GIT_TEST_FSMONITOR_SID", 0);
+
+	if (!test_env_value) {
+		/*
+		 * For now, just use {timestamp,pid} because linking
+		 * in a GUID or UUID library just adds complexity that
+		 * we don't need right now.
+		 */
+		struct timeval tv;
+		struct tm tm;
+		time_t secs;
+
+		gettimeofday(&tv, NULL);
+		secs = tv.tv_sec;
+		gmtime_r(&secs, &tm);
+
+		strbuf_addf(buf_new_sid, "%d.%4d%02d%02dT%02d%02d%02d.%06ldZ",
+			    getpid(),
+			    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+			    tm.tm_hour, tm.tm_min, tm.tm_sec,
+			    (long)tv.tv_usec);
+		return;
+	}
+
+	strbuf_addf(buf_new_sid, "test_%08x", test_env_value++);
+}
+
+static void make_new_token(struct strbuf *buf_new_token,
+			   const char *sid, uintmax_t seq_nr)
+{
+	strbuf_reset(buf_new_token);
+	strbuf_addf(buf_new_token, ":internal:%s:%"PRIuMAX, sid, seq_nr);
+}
+#endif
+
+//////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
+
 // TODO Long paths can be 32k WIDE CHARS, but that may expand into more
 // TODO than 32k BYTES if there are any UTF8 multi-byte sequences.
 // TODO But this is rather rare, try it with a fixed buffer size first
@@ -197,6 +296,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	// TODO For very heavy IO loads with deeply nested pathnames, we might
 	// TODO need a larger buffer.
 
+	struct strbuf path = STRBUF_INIT;
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD count = 0;
 	int i;
@@ -220,7 +320,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 		// TODO list other than when stitching them together?
 
 		struct fsmonitor_queue_item dummy, *queue = &dummy;
-		struct strbuf path = STRBUF_INIT;
 		uint64_t time = getnanotime();
 
 		/* Ensure strictly increasing timestamps */
@@ -243,10 +342,31 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			goto force_error_stop;
 		}
 
+		/*
+		 * If the kernel overflows the buffer that we gave it
+		 * (between our calls to ReadDirectoryChangesW()), we
+		 * get back a buffer count of zero.  (The call is
+		 * successful, but just returns zero bytes.)  This
+		 * means that we have lost event notifications.
+		 *
+		 * Reset our session so that we don't lie to our
+		 * clients.
+		 */
+		if (!count) {
+			// TODO Maybe make this verbose only.
+			trace2_data_string("fsmonitor", NULL, "rdcw", "overflow");
+
+			// TODO dump cached events and reset token session id.
+			// TODO this also means dumping any cookies.
+			//
+			// TODO goto somewhere to avoid the loops below....
+		}
+
 		p = buffer;
 		for (;;) {
 			FILE_NOTIFY_INFORMATION *info = (void *)p;
 
+			strbuf_reset(&path);
 			normalize_path(info, &path);
 
 			switch (fsmonitor_classify_path(path.buf, path.len)) {
@@ -312,7 +432,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			fsmonitor_cookie_seen_trigger(state, state->cookie_list.items[i].string);
 
 		string_list_clear(&state->cookie_list, 0);
-		strbuf_release(&path);
 	}
 
 force_error_stop:
@@ -327,5 +446,6 @@ force_shutdown:
 	ipc_server_stop_async(state->ipc_server_data);
 
 shutdown_event:
+	strbuf_release(&path);
 	return;
 }
