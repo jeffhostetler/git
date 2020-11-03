@@ -338,7 +338,8 @@ void refresh_fsmonitor(struct index_state *istate)
  *
  * The only true solution is to use a V2 FSMonitor and get a current
  * or default token value (that it understands), but we cannot do that
- * right now.
+ * until we have actually talked to an instance of the FSMonitor process
+ * (and the protocol requires that we send a token first...).
  *
  * For simplicity, just initialize like we have a V1 process and require
  * that V2 processes adapt.
