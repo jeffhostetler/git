@@ -3,6 +3,7 @@
 #include "dir.h"
 #include "ewah/ewok.h"
 #include "fsmonitor.h"
+#include "fsmonitor--daemon.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "trace2.h"

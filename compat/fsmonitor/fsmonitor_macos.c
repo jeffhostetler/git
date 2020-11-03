@@ -96,6 +96,7 @@ void FSEventStreamRelease(FSEventStreamRef stream);
 
 #include "cache.h"
 #include "fsmonitor.h"
+#include "fsmonitor--daemon.h"
 
 struct fsmonitor_daemon_backend_data
 {

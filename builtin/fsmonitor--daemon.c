@@ -10,6 +10,7 @@
 #include "config.h"
 #include "parse-options.h"
 #include "fsmonitor.h"
+#include "fsmonitor--daemon.h"
 #include "simple-ipc.h"
 #include "khash.h"
 

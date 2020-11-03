@@ -1,5 +1,6 @@
 #include "cache.h"
 #include "fsmonitor.h"
+#include "fsmonitor--daemon.h"
 #include <sys/inotify.h>
 #include "khash.h"
 
