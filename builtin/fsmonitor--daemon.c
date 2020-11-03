@@ -204,7 +204,8 @@ static int handle_client(void *data, const char *command,
 	 * We expect `command` to be of the form:
 	 *
 	 * <command> := quit NUL
-	 *            | <opaque-fsmonitor-V2-token> NUL
+	 *            | <V1-time-since-epoch-ns> NUL
+	 *            | <V2-opaque-fsmonitor-token> NUL
 	 */
 
 	if (!strcmp(command, "quit")) {
