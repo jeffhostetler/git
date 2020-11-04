@@ -273,7 +273,7 @@ static int handle_client(void *data, const char *command,
 
 			/* write the path, followed by a NUL */
 			if (reply(reply_data,
-				  queue->path->path, queue->path->len + 1) < 0)
+				  queue->path->path, strlen(queue->path->path) + 1) < 0)
 				break;
 
 			// TODO perhaps guard this with a verbose setting?
@@ -351,15 +351,15 @@ int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
 {
 	struct fsmonitor_path lookup, *e;
 	struct fsmonitor_queue_item *item;
+	unsigned int h = strhash(path);
 
-	hashmap_entry_init(&lookup.entry, len);
+	hashmap_entry_init(&lookup.entry, h);
 	lookup.path = path;
-	lookup.len = len;
 	e = hashmap_get_entry(&state->paths, &lookup, entry, NULL);
 
 	if (!e) {
 		FLEXPTR_ALLOC_MEM(e, path, path, len);
-		e->len = len;
+		hashmap_entry_init(&e->entry, h);
 		hashmap_put(&state->paths, &e->entry);
 	}
 

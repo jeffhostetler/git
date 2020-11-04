@@ -26,8 +26,6 @@ enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 struct fsmonitor_path {
 	struct hashmap_entry entry;
 	const char *path;
-	size_t len;
-	uint64_t time;
 };
 
 struct fsmonitor_queue_item {
