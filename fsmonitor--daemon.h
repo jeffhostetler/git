@@ -28,12 +28,6 @@ struct fsmonitor_path {
 	const char *path;
 	size_t len;
 	uint64_t time;
-	enum {
-		PATH_IS_UNSPECIFIED = -1,
-		PATH_DOES_NOT_EXIST,
-		PATH_IS_FILE,
-		PATH_IS_DIRECTORY,
-	} mode;
 };
 
 struct fsmonitor_queue_item {
