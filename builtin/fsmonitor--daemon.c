@@ -339,6 +339,7 @@ int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
 {
 	struct fsmonitor_queue_item *item;
 
+	// TODO maybe only emit this when verbose
 	trace2_data_string("fsmonitor", the_repository, "path", path);
 
 	item = xmalloc(sizeof(*item));
