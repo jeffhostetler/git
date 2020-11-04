@@ -259,10 +259,10 @@ static int handle_client(void *data, const char *command,
 
 	shown = kh_init_str();
 	while (queue && queue->time >= since) {
-		if (kh_get_str(shown, queue->path->path) != kh_end(shown))
+		if (kh_get_str(shown, queue->interned_path) != kh_end(shown))
 			duplicates++;
 		else {
-			kh_put_str(shown, queue->path->path, &hash_ret);
+			kh_put_str(shown, queue->interned_path, &hash_ret);
 
 			// TODO This loop is writing 1 pathname at a time.
 			// TODO This causes a pkt-line write per file.
@@ -273,13 +273,13 @@ static int handle_client(void *data, const char *command,
 
 			/* write the path, followed by a NUL */
 			if (reply(reply_data,
-				  queue->path->path, strlen(queue->path->path) + 1) < 0)
+				  queue->interned_path, strlen(queue->interned_path) + 1) < 0)
 				break;
 
 			// TODO perhaps guard this with a verbose setting?
 
 			trace2_data_string("fsmonitor", the_repository,
-					   "serve.path", queue->path->path);
+					   "serve.path", queue->interned_path);
 			count++;
 		}
 		queue = queue->next;
@@ -307,17 +307,6 @@ send_trivial_response:
 	trace2_region_leave("fsmonitor", "serve", the_repository);
 
 	return -1;
-}
-
-static int paths_cmp(const void *data, const struct hashmap_entry *he1,
-		     const struct hashmap_entry *he2, const void *keydata)
-{
-	const struct fsmonitor_path *a =
-		container_of(he1, const struct fsmonitor_path, entry);
-	const struct fsmonitor_path *b =
-		container_of(he2, const struct fsmonitor_path, entry);
-
-	return strcmp(a->path, keydata ? keydata : b->path);
 }
 
 enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len)
@@ -349,24 +338,12 @@ int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
 			 struct fsmonitor_queue_item **queue,
 			 const char *path, size_t len, uint64_t time)
 {
-	struct fsmonitor_path lookup, *e;
 	struct fsmonitor_queue_item *item;
-	unsigned int h = strhash(path);
 
-	hashmap_entry_init(&lookup.entry, h);
-	lookup.path = path;
-	e = hashmap_get_entry(&state->paths, &lookup, entry, NULL);
-
-	if (!e) {
-		FLEXPTR_ALLOC_MEM(e, path, path, len);
-		hashmap_entry_init(&e->entry, h);
-		hashmap_put(&state->paths, &e->entry);
-	}
-
-	trace2_data_string("fsmonitor", the_repository, "path", e->path);
+	trace2_data_string("fsmonitor", the_repository, "path", path);
 
 	item = xmalloc(sizeof(*item));
-	item->path = e;
+	item->interned_path = strintern(path);
 	item->time = time;
 	item->previous = NULL;
 	item->next = *queue;
@@ -394,7 +371,6 @@ static int fsmonitor_run_daemon(void)
 		.cookie_list = STRING_LIST_INIT_DUP
 	};
 
-	hashmap_init(&state.paths, paths_cmp, NULL, 0);
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);

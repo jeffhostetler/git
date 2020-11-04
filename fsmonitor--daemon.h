@@ -23,13 +23,9 @@ int fsmonitor_spawn_daemon(void);
 enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 
 /* Internal fsmonitor */
-struct fsmonitor_path {
-	struct hashmap_entry entry;
-	const char *path;
-};
 
 struct fsmonitor_queue_item {
-	struct fsmonitor_path *path;
+	const char *interned_path; /* see strintern() */
 	uint64_t time;
 	struct fsmonitor_queue_item *previous, *next;
 };
@@ -47,7 +43,6 @@ struct fsmonitor_cookie_item {
 struct fsmonitor_daemon_backend_data;
 
 struct fsmonitor_daemon_state {
-	struct hashmap paths;
 	struct fsmonitor_queue_item *first;
 	struct fsmonitor_queue_item *last;
 	uint64_t latest_update;
