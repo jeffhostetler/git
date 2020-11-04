@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "config.h"
 #include "fsmonitor.h"
 #include "fsmonitor--daemon.h"
 
@@ -9,6 +10,9 @@ struct fsmonitor_daemon_backend_data
 	HANDLE hListener[2];
 #define LISTENER_SHUTDOWN 0
 #define LISTENER_HAVE_DATA 1
+
+	struct strbuf token_sid;
+	uint64_t token_seq_nr;
 };
 
 /*
@@ -64,7 +68,6 @@ struct fsmonitor_daemon_backend_data
  * Clients that present a token with a stale (non-current)
  * <session_id> will always be given a trivial response.
  */
-#if 0
 static void make_new_session_id(struct strbuf *buf_new_sid)
 {
 	static int test_env_value = -1;
@@ -72,7 +75,7 @@ static void make_new_session_id(struct strbuf *buf_new_sid)
 	strbuf_reset(buf_new_sid);
 
 	if (test_env_value < 0)
-		test_env_value = get_env_bool("GIT_TEST_FSMONITOR_SID", 0);
+		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_SID", 0);
 
 	if (!test_env_value) {
 		/*
@@ -99,11 +102,12 @@ static void make_new_session_id(struct strbuf *buf_new_sid)
 	strbuf_addf(buf_new_sid, "test_%08x", test_env_value++);
 }
 
+#if 0
 static void make_new_token(struct strbuf *buf_new_token,
-			   const char *sid, uintmax_t seq_nr)
+			   const char *sid, uint64_t seq_nr)
 {
 	strbuf_reset(buf_new_token);
-	strbuf_addf(buf_new_token, ":internal:%s:%"PRIuMAX, sid, seq_nr);
+	strbuf_addf(buf_new_token, ":internal:%s:%"PRIu64, sid, seq_nr);
 }
 #endif
 
@@ -211,6 +215,9 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 	data->hListener[LISTENER_SHUTDOWN] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	data->hListener[LISTENER_HAVE_DATA] = CreateEvent(NULL, TRUE, FALSE, NULL);
 
+	strbuf_init(&data->token_sid, 0);
+	make_new_session_id(&data->token_sid);
+
 	state->backend_data = data;
 	return 0;
 }
@@ -231,6 +238,8 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 
 	if (data->hDir != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hDir);
+
+	strbuf_release(&data->token_sid);
 
 	FREE_AND_NULL(state->backend_data);
 }
