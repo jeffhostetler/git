@@ -30,12 +30,18 @@ struct fsmonitor_queue_item {
 	struct fsmonitor_queue_item *previous, *next;
 };
 
+enum fsmonitor_cookie_item_result {
+	FCIR_ERROR = -1, /* could not create cookie file ? */
+	FCIR_INIT = 0,
+	FCIR_SEEN,
+	FCIR_ABORT,
+};
+
 struct fsmonitor_cookie_item {
 	struct hashmap_entry entry;
 	const char *name;
-	pthread_mutex_t seen_lock;
-	pthread_cond_t seen_cond;
-	int seen;
+	/* `result` is locked under state->cookies_lock */
+	enum fsmonitor_cookie_item_result result;
 };
 
 #define FSMONITOR_COOKIE_PREFIX ".watchman-cookie-git-"
@@ -47,7 +53,9 @@ struct fsmonitor_daemon_state {
 	struct fsmonitor_queue_item *last;
 	uint64_t latest_update;
 	pthread_t watcher_thread;
-	pthread_mutex_t queue_update_lock, cookies_lock;
+	pthread_mutex_t queue_update_lock;
+	pthread_mutex_t cookies_lock;
+	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
 	struct string_list cookie_list;

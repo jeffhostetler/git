@@ -381,6 +381,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			switch (fsmonitor_classify_path(path.buf, path.len)) {
 			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 				/* special case cookie files within .git/ */
+
+				// TODO consider only signaling the cookie for the
+				// TODO delete event.  because deletes are more
+				// TODO deterministic than just a simple close()
+				// TODO event. IIRC.
+
 				string_list_append(&state->cookie_list, path.buf + 5);
 				break;
 

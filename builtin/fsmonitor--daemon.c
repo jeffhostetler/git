@@ -68,41 +68,30 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 	return git_default_config(var, value, cb);
 }
 
-
-// TODO Should there be a timeout on how long we wait for the
-// TODO cookie file to appear in the notification stream?
-// TODO This wait will block the `handle_client()` thread (which
-// TODO blockes the response to the client) and which is running
-// TODO in one of the IPC thread pool worker threads.  Which
-// TODO could cause the the daemon to become unresponsive (if
-// TODO several worker threads get stuck).
-//
-// TODO TODO YES -- If the .git directory gets deleted and the
-// TODO TODO fsmonitor listener thread sees it (and shutdown)
-// TODO TODO before it (the fsmonitor listener thread) sees
-// TODO TODO the cookie event that a worker thread is waiting
-// TODO TODO for, that worker thread will block forever.
-// TODO TODO So I think we need a flag bit under the lock to
-// TODO TODO tell worker threads to just give up.
-//
-// TODO Who destroys &cookie.seen_lock and &cookie.seen_cond ?
-
-static void fsmonitor_wait_for_cookie(struct fsmonitor_daemon_state *state)
+static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
+	struct fsmonitor_daemon_state *state)
 {
 	int fd;
 	struct fsmonitor_cookie_item cookie;
-	const char *cookie_path;
+	char *cookie_path;
 	struct strbuf cookie_filename = STRBUF_INIT;
+	volatile int my_cookie_seq;
 
-	// TODO we increment `state->cookie_seq` here.  Are we under a lock?
+	pthread_mutex_lock(&state->cookies_lock);
+	my_cookie_seq = state->cookie_seq++;
+	pthread_mutex_unlock(&state->cookies_lock);
+
+	// TODO This assumes that .git is a directory.  We need to
+	// TODO figure out where to put the cookie files when .git
+	// TODO is a link (such as for submodules).  Especially since
+	// TODO the link directory may not be under the cone of the
+	// TODO worktree and thus not registered for notifications.
 
 	strbuf_addstr(&cookie_filename, FSMONITOR_COOKIE_PREFIX);
-	strbuf_addf(&cookie_filename, "%i-%i", getpid(), state->cookie_seq++);
+	strbuf_addf(&cookie_filename, "%i-%i", getpid(), my_cookie_seq);
 	cookie.name = strbuf_detach(&cookie_filename, NULL);
-	cookie.seen = 0;
+	cookie.result = FCIR_INIT;
 	hashmap_entry_init(&cookie.entry, strhash(cookie.name));
-	pthread_mutex_init(&cookie.seen_lock, NULL);
-	pthread_cond_init(&cookie.seen_cond, NULL);
 
 	// TODO Putting the address of a stack variable into a global
 	// TODO hashmap feels dodgy.  Granted, the `handle_client()`
@@ -113,42 +102,34 @@ static void fsmonitor_wait_for_cookie(struct fsmonitor_daemon_state *state)
 	pthread_mutex_lock(&state->cookies_lock);
 	hashmap_add(&state->cookies, &cookie.entry);
 	pthread_mutex_unlock(&state->cookies_lock);
+
 	cookie_path = git_pathdup("%s", cookie.name);
 	fd = open(cookie_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd >= 0) {
 		close(fd);
-		pthread_mutex_lock(&cookie.seen_lock);
-		while (!cookie.seen)
-			pthread_cond_wait(&cookie.seen_cond, &cookie.seen_lock);
-		cookie.seen = 0;
-		pthread_mutex_unlock(&cookie.seen_lock);
 		unlink_or_warn(cookie_path);
 
-		// TODO Here we have been signalled that the file
-		// TODO has appeared.  Shouldn't we remove the cookie
-		// TODO from the hashmap and destroy the _mutex and _cond
-		// TODO vars.  (It looks like _trigger does remove it, so
-		// TOOD maybe just destroy the vars.)
-		//
-		// TODO The unlink() will cause a second notification.
-		// TODO Is that significant?  (It looks like the was_deleted)
-		// TODO bit guards that.)
+		// TODO We need a way to timeout this loop in case the
+		// TODO listener thread never sees the event for the
+		// TODO cookie file.
 
-	} else {
 		pthread_mutex_lock(&state->cookies_lock);
+		while (cookie.result == FCIR_INIT)
+			pthread_cond_wait(&state->cookies_cond,
+					  &state->cookies_lock);
+
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
 		pthread_mutex_unlock(&state->cookies_lock);
-
-		// TODO What happens if we cannot create the cookie file?
-		// TODO We don't block the current thread.  The caller
-		// TODO will continue as is and maybe report an incomplete
-		// TODO snapshot ??
-		//
-		// TODO If we cannot create the file, we should remove
-		// TODO this cookie from the hashmap, right?
-		//
-		// TODO And destroy cookie.seen_lock and cookie.seen_cond.
+	} else {
+		pthread_mutex_lock(&state->cookies_lock);
+		cookie.result = FCIR_ERROR;
+		hashmap_remove(&state->cookies, &cookie.entry, NULL);
+		pthread_mutex_unlock(&state->cookies_lock);
 	}
+
+	free((char*)cookie.name);
+	free(cookie_path);
+	return cookie.result;
 }
 
 void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
@@ -159,27 +140,14 @@ void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
 
 	hashmap_entry_init(&key.entry, strhash(cookie_name));
 	key.name = cookie_name;
+
+	pthread_mutex_lock(&state->cookies_lock);
 	cookie = hashmap_get_entry(&state->cookies, &key, entry, NULL);
-
 	if (cookie) {
-		pthread_mutex_lock(&cookie->seen_lock);
-		cookie->seen = 1;
-		pthread_cond_signal(&cookie->seen_cond);
-		pthread_mutex_unlock(&cookie->seen_lock);
-
-		// TODO Here we are removing the cookie from the hashmap.
-		// TODO This requires reaching into the cookie for the key,
-		// TODO right?  The cookie was added using a stack variable
-		// TODO in the `handle_client()` thread -- the thread we just
-		// TODO woke up.  So it might be possible for that thread to
-		// TODO have returned and possibly have trashed the content
-		// TODO of this cookie.  This could make this hashmap operation
-		// TODO unsafe, right?
-
-		pthread_mutex_lock(&state->cookies_lock);
-		hashmap_remove(&state->cookies, &cookie->entry, NULL);
-		pthread_mutex_unlock(&state->cookies_lock);
+		cookie->result = FCIR_SEEN;
+		pthread_cond_broadcast(&state->cookies_cond);
 	}
+	pthread_mutex_unlock(&state->cookies_lock);
 }
 
 KHASH_INIT(str, const char *, int, 0, kh_str_hash_func, kh_str_hash_equal);
@@ -235,6 +203,12 @@ static int handle_client(void *data, const char *command,
 	/*
 	 * write out cookie file so the queue gets filled with all
 	 * the file system events that happen before the file gets written
+	 *
+	 * TODO Look at `fsmonitor_cookie_item_result` return value and
+	 * TODO consider doing something different if get !SEEN.
+	 * TODO For example, if we could not create the cookie file.
+	 * TODO Or if we need to change the token-sid and want to abort
+	 * TODO and send a trivial result.
 	 */
 	fsmonitor_wait_for_cookie(state);
 
@@ -374,6 +348,7 @@ static int fsmonitor_run_daemon(void)
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);
+	pthread_cond_init(&state.cookies_cond, NULL);
 
 	state.error_code = 0;
 	state.latest_update = getnanotime();
@@ -394,6 +369,7 @@ static int fsmonitor_run_daemon(void)
 				 fsmonitor__ipc_threads,
 				 handle_client,
 				 &state)) {
+		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
 		fsmonitor_listen__dtor(&state);
@@ -411,6 +387,7 @@ static int fsmonitor_run_daemon(void)
 		ipc_server_await(state.ipc_server_data);
 		ipc_server_free(state.ipc_server_data);
 
+		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
 		fsmonitor_listen__dtor(&state);
@@ -435,6 +412,7 @@ static int fsmonitor_run_daemon(void)
 
 	ipc_server_free(state.ipc_server_data);
 
+	pthread_cond_destroy(&state.cookies_cond);
 	pthread_mutex_destroy(&state.cookies_lock);
 	pthread_mutex_destroy(&state.queue_update_lock);
 	fsmonitor_listen__dtor(&state);
