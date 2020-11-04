@@ -402,7 +402,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			case IS_WORKTREE_PATH:
 			default:
 				/* try to queue normal pathname */
-				if (fsmonitor_queue_path(state, &queue, path.buf,
+				if (fsmonitor_queue_path(&queue, path.buf,
 							 path.len, time) < 0) {
 					error("could not queue '%s'; exiting",
 					      path.buf);

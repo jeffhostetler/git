@@ -220,7 +220,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
 			trace2_data_string("fsmonitor", the_repository, "message", "Dropped event");
-			fsmonitor_queue_path(state, &queue, "/", 1, time);
+			fsmonitor_queue_path(&queue, "/", 1, time);
 		}
 
 		switch (fsmonitor_classify_path(path, len)) {
@@ -261,14 +261,14 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 
 			/* TODO: fsevent could be marked as both a file and directory */
 			if ((event_flags[i] & kFSEventStreamEventFlagItemIsFile) &&
-			    fsmonitor_queue_path(state, &queue, path, len, time) < 0) {
+			    fsmonitor_queue_path(&queue, path, len, time) < 0) {
 				error("could not queue '%s'; exiting", path);
 				data->shutdown_style = FORCE_ERROR_STOP;
 				CFRunLoopStop(data->rl);
 				return;
 			} else if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
 				char *p = xstrfmt("%s/", path);
-				if (fsmonitor_queue_path(state, &queue,
+				if (fsmonitor_queue_path(&queue,
 							 p, len + 1,
 							 time) < 0) {
 					error("could not queue '%s'; exiting", p);

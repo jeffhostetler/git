@@ -74,8 +74,7 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 /*
  * Register a path as having been touched at a certain time.
  */
-int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
-			 struct fsmonitor_queue_item **queue,
+int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
 			 const char *path, size_t len, uint64_t time);
 
 /* This needs to be implemented by the backend */

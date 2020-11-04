@@ -334,8 +334,7 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->name, keydata ? keydata : b->name);
 }
 
-int fsmonitor_queue_path(struct fsmonitor_daemon_state *state,
-			 struct fsmonitor_queue_item **queue,
+int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
 			 const char *path, size_t len, uint64_t time)
 {
 	struct fsmonitor_queue_item *item;
