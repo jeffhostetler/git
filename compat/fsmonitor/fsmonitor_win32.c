@@ -310,32 +310,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	DWORD count = 0;
 	int i;
 
+	// TODO convert 'time' to a token_seq_nr...
+	uint64_t time = getnanotime();
+
 	for (;;) {
-
-		// TODO Something about this feels dirty and dangerous:
-		// TODO borrowing a stack address to seed a doubly-linked
-		// TODO list.  I understand you can build the new list
-		// TODO fragment here unlocked and then only lock to tie
-		// TODO the new list to the existing shared list in `state`,
-		// TODO but it makes me want to pause and ask if it is
-		// TODO necessary.
-		//
-		// TODO For example, if we built a single-linked list here
-		// TODO (with a NULL terminator node) and kept track of the
-		// TODO first and last nodes, can we in `fsmonitor_queue_path()`
-		// TODO simply connect the parts under lock?
-		//
-		// TODO That is, do we actually use both directions of the
-		// TODO list other than when stitching them together?
-
-		struct fsmonitor_queue_item dummy, *queue = &dummy;
-		uint64_t time = getnanotime();
-
-		/* Ensure strictly increasing timestamps */
-		pthread_mutex_lock(&state->queue_update_lock);
-		if (time <= state->latest_update)
-			time = state->latest_update + 1;
-		pthread_mutex_unlock(&state->queue_update_lock);
+		struct fsmonitor_queue_item *queue_head = NULL;
+		struct fsmonitor_queue_item *queue_tail = NULL;
 
 		switch (read_directory_changes_overlapped(state,
 							  buffer, sizeof(buffer),
@@ -407,13 +387,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 
 			case IS_WORKTREE_PATH:
 			default:
-				/* try to queue normal pathname */
-				if (fsmonitor_queue_path(&queue, path.buf,
-							 path.len, time) < 0) {
-					error("could not queue '%s'; exiting",
-					      path.buf);
-					goto force_error_stop;
-				}
+				/* queue normal pathname */
+				queue_head = fsmonitor_private_add_path(queue_head,
+									path.buf,
+									time++);
+				if (!queue_tail)
+					queue_tail = queue_head;
 				break;
 			}
 
@@ -422,16 +401,9 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			p += info->NextEntryOffset;
 		}
 
-		/* Only update the queue if it changed */
-		if (queue != &dummy) {
-			pthread_mutex_lock(&state->queue_update_lock);
-			if (state->first)
-				state->first->previous = dummy.previous;
-			dummy.previous->next = state->first;
-			state->first = queue;
-			state->latest_update = time;
-			pthread_mutex_unlock(&state->queue_update_lock);
-		}
+		fsmonitor_publish_queue_paths(state, queue_head, queue_tail);
+		queue_head = NULL;
+		queue_tail = NULL;
 
 		// TODO (more of a clarification actually)
 		// TODO The cookie_list is a list of the cookied observed

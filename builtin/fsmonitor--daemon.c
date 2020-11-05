@@ -161,7 +161,7 @@ static int handle_client(void *data, const char *command,
 	struct fsmonitor_daemon_state *state = data;
 	uintmax_t since;
 	char *p;
-	struct fsmonitor_queue_item *queue;
+	const struct fsmonitor_queue_item *queue;
 	struct strbuf token = STRBUF_INIT;
 	intmax_t count = 0, duplicates = 0;
 	kh_str_t *shown;
@@ -308,10 +308,19 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->name, keydata ? keydata : b->name);
 }
 
-int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
-			 const char *path, size_t len, uint64_t time)
+struct fsmonitor_queue_item *fsmonitor_private_add_path(
+	const struct fsmonitor_queue_item *queue_head,
+	const char *path, uint64_t time)
 {
 	struct fsmonitor_queue_item *item;
+
+	if (queue_head) {
+		/*
+		 * The queue/list is implicitly sorted (by construction)
+		 * from newest to oldest.
+		 */
+		assert(time > queue_head->time);
+	}
 
 	// TODO maybe only emit this when verbose
 	trace2_data_string("fsmonitor", the_repository, "path", path);
@@ -319,12 +328,38 @@ int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
 	item = xmalloc(sizeof(*item));
 	item->interned_path = strintern(path);
 	item->time = time;
-	item->previous = NULL;
-	item->next = *queue;
-	(*queue)->previous = item;
-	*queue = item;
+	item->next = queue_head;
 
-	return 0;
+	return item;
+}
+
+void fsmonitor_publish_queue_paths(
+	struct fsmonitor_daemon_state *state,
+	struct fsmonitor_queue_item *queue_head,
+	struct fsmonitor_queue_item *queue_tail)
+{
+	if (!queue_head)
+		return;
+
+	assert(queue_tail);
+
+	pthread_mutex_lock(&state->queue_update_lock);
+	if (state->first) {
+		/*
+		 * The queue/list is implicitly sorted (by construction)
+		 * from newest to oldest.  And the items in the given
+		 * fragment are newer than anything already in the queue.
+		 */
+		assert(queue_tail->time > state->first->time);
+	}
+
+	queue_tail->next = state->first;
+	state->first = queue_head;
+
+	// TODO revisit the latest_update field.  do we still need it?
+	state->latest_update = queue_head->time;
+
+	pthread_mutex_unlock(&state->queue_update_lock);
 }
 
 static void *fsmonitor_listen_thread_proc(void *_state)

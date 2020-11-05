@@ -27,7 +27,7 @@ enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 struct fsmonitor_queue_item {
 	const char *interned_path; /* see strintern() */
 	uint64_t time;
-	struct fsmonitor_queue_item *previous, *next;
+	const struct fsmonitor_queue_item *next;
 };
 
 enum fsmonitor_cookie_item_result {
@@ -50,7 +50,6 @@ struct fsmonitor_daemon_backend_data;
 
 struct fsmonitor_daemon_state {
 	struct fsmonitor_queue_item *first;
-	struct fsmonitor_queue_item *last;
 	uint64_t latest_update;
 	pthread_t watcher_thread;
 	pthread_mutex_t queue_update_lock;
@@ -81,9 +80,27 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 
 /*
  * Register a path as having been touched at a certain time.
+ *
+ * Create a new item for the given (path, time) and prepend it
+ * to the given queue.  This is a private list of items and NOT
+ * (yet) linked into the fsmonitor_daemon_state (and therefore
+ * not yet visible to worker threads), so no locking is required.
+ *
+ * Returns the new head of the list.
  */
-int fsmonitor_queue_path(struct fsmonitor_queue_item **queue,
-			 const char *path, size_t len, uint64_t time);
+struct fsmonitor_queue_item *fsmonitor_private_add_path(
+	const struct fsmonitor_queue_item *queue_head,
+	const char *path, uint64_t time);
+
+/*
+ * Link the given private item queue into the official
+ * fsmonitor_daemon_state and thus make them visible to
+ * worker threads.
+ */
+void fsmonitor_publish_queue_paths(
+	struct fsmonitor_daemon_state *state,
+	struct fsmonitor_queue_item *queue_head,
+	struct fsmonitor_queue_item *queue_tail);
 
 /* This needs to be implemented by the backend */
 
