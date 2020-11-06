@@ -35,10 +35,17 @@ test_expect_success 'implicit daemon start' '
 	test_must_fail git -C test_implicit fsmonitor--daemon --is-running &&
 
 	# query will implicitly start the daemon.
+	#
+	# for test-script simplicity, we send a V1 timestamp rather than
+	# a V2 token.  either way, the daemon response to any query contains
+	# a new V2 token.  (the daemon may complain that we sent a V1 request,
+	# but this test case is only concerned with whether the daemon was
+	# implicitly started.)
+
 	GIT_TRACE2_EVENT="$PWD/.git/trace" \
 		git -C test_implicit fsmonitor--daemon --query 0 >actual &&
 	nul_to_q <actual >actual.filtered &&
-	grep "^[1-9][0-9]*Q/Q$" actual.filtered &&
+	grep ":internal:" actual.filtered &&
 	sleep 1 &&
 
 	# confirm that a daemon was started in the background.  since this
