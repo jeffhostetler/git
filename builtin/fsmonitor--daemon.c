@@ -112,6 +112,10 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		// TODO We need a way to timeout this loop in case the
 		// TODO listener thread never sees the event for the
 		// TODO cookie file.
+		// TODO
+		// TODO Since we don't have pthread_cond_timedwait() on
+		// TODO Windows, maybe let the listener thread (which is
+		// TODO getting regular events) set a FCIR_TIMEOUT bit...
 
 		pthread_mutex_lock(&state->cookies_lock);
 		while (cookie.result == FCIR_INIT)
@@ -150,6 +154,152 @@ void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
 	pthread_mutex_unlock(&state->cookies_lock);
 }
 
+/*
+ * Requests to and from a FSMonitor Protocol V2 provider use an opaque
+ * "token" as a virtual timestamp.  Clients can request a summary of all
+ * created/deleted/modified files relative to a token.  In the response,
+ * clients receive a new token for the next (relative) request.
+ *
+ *
+ * Token Format
+ * ============
+ *
+ * The contents of the token are private and provider-specific.
+ *
+ * For the internal fsmonitor--daemon, we define a token as follows:
+ *
+ *     ":internal:" <session_id> ":" <sequence_nr>
+ *
+ * The <session_id> is an arbitrary OPAQUE string, such as a GUID,
+ * UUID, or {timestamp,pid}.  It is used to group all file system
+ * events that happened during the lifespan of an instance of the
+ * daemon.
+ *
+ *     Unlike FSMonitor Protocol V1, it is not defined as a timestamp
+ *     and does not define less-than/greater-than relationships.
+ *     (There are too many race conditions to rely on file system
+ *     event timestamps.)
+ *
+ * The <sequence_nr> is a simple integer incremented for each file
+ * system event received.  When a new <session_id> is created, the
+ * <sequence_nr> is reset.
+ *
+ *
+ * About Session Ids
+ * =================
+ *
+ * A new <session_id> is created each time the daemon is started.
+ *
+ * Token Reset(1): A new <session_id> is also created if the daemon
+ * loses sync with the file system notification mechanism.
+ *
+ * Token Reset(2): A new <session_id> MIGHT also be created when
+ * complex file system operations are performed.  For example, a
+ * directory rename/move/delete sequence that implicitly affects
+ * tracked files within.
+ *
+ * When the daemon resets the token <session_id>, it is free to
+ * discard all cached file system events.  By construction, a token
+ * reset means that the daemon cannot completely represent the set of
+ * file system changes and therefore cannot make any assurances to the
+ * client.
+ *
+ * Clients that present a token with a stale (non-current)
+ * <session_id> will always be given a trivial response.
+ */
+void fsmonitor_init_new_token_item(struct fsmonitor_token_item *token)
+{
+	static int test_env_value = -1;
+
+	strbuf_init(&token->token_sid, 0);
+	token->queue_head = NULL;
+	token->queue_tail = NULL;
+
+	if (test_env_value < 0)
+		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_SID", 0);
+
+	if (!test_env_value) {
+		/*
+		 * For now, just use {timestamp,pid} because linking
+		 * in a GUID or UUID library just adds complexity that
+		 * we don't need right now.
+		 */
+		struct timeval tv;
+		struct tm tm;
+		time_t secs;
+
+		gettimeofday(&tv, NULL);
+		secs = tv.tv_sec;
+		gmtime_r(&secs, &tm);
+
+		strbuf_addf(&token->token_sid,
+			    "%d.%4d%02d%02dT%02d%02d%02d.%06ldZ",
+			    getpid(),
+			    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+			    tm.tm_hour, tm.tm_min, tm.tm_sec,
+			    (long)tv.tv_usec);
+		return;
+	}
+
+	strbuf_addf(&token->token_sid, "test_%08x", test_env_value++);
+}
+
+void fsmonitor_release_token_item(struct fsmonitor_token_item *token)
+{
+	if (!token)
+		return;
+
+	strbuf_release(&token->token_sid);
+
+	// TODO free token->queue_head list
+
+	token->queue_head = NULL;
+	token->queue_tail = NULL;
+}
+
+/*
+ * Format an opaque token string to send to the client.
+ */
+static void fsmonitor_format_response_token(
+	struct strbuf *response_token,
+	const struct strbuf *response_sid,
+	const struct fsmonitor_queue_item *queue_item)
+{
+	uint64_t seq_nr = (queue_item) ? queue_item->token_seq_nr : 0;
+
+	strbuf_reset(response_token);
+	strbuf_addf(response_token, ":internal:%s:%"PRIu64,
+		    response_sid->buf, seq_nr);
+}
+
+/*
+ * Parse an opaque token from the client.
+ */
+static int fsmonitor_parse_client_token(const char *buf_token,
+					struct strbuf *requested_sid,
+					uint64_t *seq_nr)
+{
+	const char *p;
+	char *p_end;
+
+	strbuf_reset(requested_sid);
+	*seq_nr = 0;
+
+	if (!skip_prefix(buf_token, ":internal:", &p))
+		return 1;
+
+	while (*p && *p != ':')
+		strbuf_addch(requested_sid, *p++);
+	if (!*p++)
+		return 1;
+
+	*seq_nr = (uint64_t)strtoumax(p, &p_end, 10);
+	if (*p_end)
+		return 1;
+
+	return 0;
+}
+
 KHASH_INIT(str, const char *, int, 0, kh_str_hash_func, kh_str_hash_equal);
 
 static ipc_server_application_cb handle_client;
@@ -159,13 +309,15 @@ static int handle_client(void *data, const char *command,
 			 struct ipc_server_reply_data *reply_data)
 {
 	struct fsmonitor_daemon_state *state = data;
-	uintmax_t since;
-	char *p;
+	struct strbuf response_token = STRBUF_INIT;
+	struct strbuf requested_sid = STRBUF_INIT;
+	uintmax_t requested_oldest_seq_nr = 0;
+	const char *p;
 	const struct fsmonitor_queue_item *queue;
-	struct strbuf token = STRBUF_INIT;
 	intmax_t count = 0, duplicates = 0;
 	kh_str_t *shown;
 	int hash_ret;
+	int result;
 
 	trace2_data_string("fsmonitor", the_repository, "command", command);
 
@@ -189,16 +341,70 @@ static int handle_client(void *data, const char *command,
 		return SIMPLE_IPC_QUIT;
 	}
 
-	trace2_region_enter("fsmonitor", "serve", the_repository);
+	trace2_region_enter("fsmonitor", "handle_client", the_repository);
 
-	// TODO for now, assume the token is a timestamp.
-	// TODO fix this.
-	since = strtoumax(command, &p, 10);
+	if (!skip_prefix(command, ":internal:", &p)) {
+		/* assume V1 timestamp or garbage */
 
-	if (*p) {
-		error(_("fsmonitor: invalid command line '%s'"), command);
+		char *p_end;
+
+		strtoumax(command, &p_end, 10);
+		error((*p_end) ?
+		      _("fsmonitor: invalid command line '%s'") :
+		      _("fsmonitor: unsupported V1 protocol '%s'"),
+		      command);
+		result = -1;
 		goto send_trivial_response;
 	}
+
+	/* try V2 token */
+
+	pthread_mutex_lock(&state->queue_update_lock);
+
+	if (fsmonitor_parse_client_token(command, &requested_sid,
+					 &requested_oldest_seq_nr)) {
+		error(_("fsmonitor: invalid V2 protocol token '%s'"),
+		      command);
+		pthread_mutex_unlock(&state->queue_update_lock);
+		result = -1;
+		goto send_trivial_response;
+	}
+	if (strcmp(requested_sid.buf, state->token_item.token_sid.buf)) {
+		/*
+		 * The client last spoke to a different daemon
+		 * instance -OR- the daemon had to resync with
+		 * the filesystem (and lost events), so reject.
+		 */
+		error(_("fsmonitor: token-sid different '%s' '%s'"),
+		      requested_sid.buf, state->token_item.token_sid.buf);
+		pthread_mutex_unlock(&state->queue_update_lock);
+		result = -1;
+		goto send_trivial_response;
+	}
+	if (!state->token_item.queue_tail) {
+		/*
+		 * The listener has not received any filesystem
+		 * events yet.
+		 */
+		pthread_mutex_unlock(&state->queue_update_lock);
+		result = 0;
+		goto send_trivial_response;
+	}
+	if (requested_oldest_seq_nr < state->token_item.queue_tail->token_seq_nr) {
+		/*
+		 * The client wants older events that we have for
+		 * this token-sid.  This probably means that we have
+		 * flushed older events and now have a coverage gap.
+		 */
+		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
+		      requested_oldest_seq_nr,
+		      state->token_item.queue_tail->token_seq_nr);
+		pthread_mutex_unlock(&state->queue_update_lock);
+		result = -1;
+		goto send_trivial_response;
+	}
+
+	pthread_mutex_unlock(&state->queue_update_lock);
 
 	/*
 	 * write out cookie file so the queue gets filled with all
@@ -212,27 +418,51 @@ static int handle_client(void *data, const char *command,
 	 */
 	fsmonitor_wait_for_cookie(state);
 
+	/*
+	 * The client wants all events newer than the requested seq_nr.
+	 * 'state->token_item.queue_head' has the most recent event, but
+	 * is it being updated continuously by the listener thread.  We
+	 * can start with the current head and walk the queue chain and
+	 * send the items to the client.  This is a bit of an arbitrary
+	 * starting point -- that is, should we loop back if the current
+	 * head changes while we were sending existing items?
+	 *
+	 * But we cannot do that because the V2 protocol requires that
+	 * we send the new token as the first line in the response and
+	 * it needs to include the head seq-nr.
+	 */
 	pthread_mutex_lock(&state->queue_update_lock);
-	if (since < state->latest_update) {
-		volatile uintmax_t latest = state->latest_update;
+
+	if (strcmp(requested_sid.buf, state->token_item.token_sid.buf)) {
+		/*
+		 * Ack! The listener thread lost sync with the filesystem
+		 * and created a new token while we were waiting for the
+		 * cookie file to be created!  Just give up.
+		 */
+		error(_("fsmonitor: lost filesystem sync '%s' '%s'"),
+		      requested_sid.buf, state->token_item.token_sid.buf);
 		pthread_mutex_unlock(&state->queue_update_lock);
-		error(_("fsmonitor: incorrect/early timestamp (since %" PRIuMAX")(latest %" PRIuMAX")"),
-		      since, latest);
+		result = -1;
 		goto send_trivial_response;
 	}
 
-	if (!state->latest_update)
-		BUG("latest_update was not updated");
+	fsmonitor_format_response_token(&response_token,
+					&state->token_item.token_sid,
+					state->token_item.queue_head);
 
-	queue = state->first;
-	strbuf_addf(&token, "%"PRIu64"", state->latest_update);
+	// TODO We're going to hold onto a pointer to the item queue
+	// TODO for this token-item and walk it.  Do a ref-count increment
+	// TODO on this token-item, so the listener doesn't free it.
+	queue = state->token_item.queue_head;
+
 	pthread_mutex_unlock(&state->queue_update_lock);
 
-	reply(reply_data, token.buf, token.len + 1);
-	trace2_data_string("fsmonitor", the_repository, "serve.token", token.buf);
+	reply(reply_data, response_token.buf, response_token.len + 1);
+	trace2_data_string("fsmonitor", the_repository, "serve.token",
+			   response_token.buf);
 
 	shown = kh_init_str();
-	while (queue && queue->time >= since) {
+	while (queue && queue->token_seq_nr >= requested_oldest_seq_nr) {
 		if (kh_get_str(shown, queue->interned_path) != kh_end(shown))
 			duplicates++;
 		else {
@@ -260,27 +490,33 @@ static int handle_client(void *data, const char *command,
 	}
 
 	kh_release_str(shown);
-	strbuf_release(&token);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.count", count);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.skipped-duplicates", duplicates);
-	trace2_region_leave("fsmonitor", "serve", the_repository);
 
+	strbuf_release(&response_token);
+	strbuf_release(&requested_sid);
+
+	trace2_region_leave("fsmonitor", "handle_client", the_repository);
 	return 0;
 
 send_trivial_response:
 	pthread_mutex_lock(&state->queue_update_lock);
-	strbuf_addf(&token, "%"PRIu64"", state->latest_update);
+	fsmonitor_format_response_token(&response_token,
+					&state->token_item.token_sid,
+					state->token_item.queue_head);
 	pthread_mutex_unlock(&state->queue_update_lock);
 
-	reply(reply_data, token.buf, token.len + 1);
-	trace2_data_string("fsmonitor", the_repository, "serve.token", token.buf);
+	reply(reply_data, response_token.buf, response_token.len + 1);
+	trace2_data_string("fsmonitor", the_repository, "serve.token",
+			   response_token.buf);
 	reply(reply_data, "/", 2);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.trivial", 1);
 
-	strbuf_release(&token);
-	trace2_region_leave("fsmonitor", "serve", the_repository);
+	strbuf_release(&response_token);
+	strbuf_release(&requested_sid);
 
-	return -1;
+	trace2_region_leave("fsmonitor", "handle_client", the_repository);
+	return result;
 }
 
 enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len)
@@ -310,7 +546,7 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
 	const struct fsmonitor_queue_item *queue_head,
-	const char *path, uint64_t time)
+	const char *path, uint64_t token_seq_nr)
 {
 	struct fsmonitor_queue_item *item;
 
@@ -319,7 +555,7 @@ struct fsmonitor_queue_item *fsmonitor_private_add_path(
 		 * The queue/list is implicitly sorted (by construction)
 		 * from newest to oldest.
 		 */
-		assert(time > queue_head->time);
+		assert(token_seq_nr > queue_head->token_seq_nr);
 	}
 
 	// TODO maybe only emit this when verbose
@@ -327,7 +563,7 @@ struct fsmonitor_queue_item *fsmonitor_private_add_path(
 
 	item = xmalloc(sizeof(*item));
 	item->interned_path = strintern(path);
-	item->time = time;
+	item->token_seq_nr = token_seq_nr;
 	item->next = queue_head;
 
 	return item;
@@ -344,20 +580,21 @@ void fsmonitor_publish_queue_paths(
 	assert(queue_tail);
 
 	pthread_mutex_lock(&state->queue_update_lock);
-	if (state->first) {
+	if (state->token_item.queue_head) {
 		/*
 		 * The queue/list is implicitly sorted (by construction)
 		 * from newest to oldest.  And the items in the given
 		 * fragment are newer than anything already in the queue.
 		 */
-		assert(queue_tail->time > state->first->time);
+		assert(queue_tail->token_seq_nr >
+		       state->token_item.queue_head->token_seq_nr);
 	}
 
-	queue_tail->next = state->first;
-	state->first = queue_head;
+	queue_tail->next = state->token_item.queue_head;
+	state->token_item.queue_head = queue_head;
 
-	// TODO revisit the latest_update field.  do we still need it?
-	state->latest_update = queue_head->time;
+	if (!state->token_item.queue_tail)
+		state->token_item.queue_tail = queue_tail;
 
 	pthread_mutex_unlock(&state->queue_update_lock);
 }
@@ -384,9 +621,8 @@ static int fsmonitor_run_daemon(void)
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
-
+	fsmonitor_init_new_token_item(&state.token_item);
 	state.error_code = 0;
-	state.latest_update = getnanotime();
 
 	if (fsmonitor_listen__ctor(&state))
 		return error(_("could not initialize listener thread"));
@@ -404,6 +640,7 @@ static int fsmonitor_run_daemon(void)
 				 fsmonitor__ipc_threads,
 				 handle_client,
 				 &state)) {
+		fsmonitor_release_token_item(&state.token_item);
 		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
@@ -422,6 +659,7 @@ static int fsmonitor_run_daemon(void)
 		ipc_server_await(state.ipc_server_data);
 		ipc_server_free(state.ipc_server_data);
 
+		fsmonitor_release_token_item(&state.token_item);
 		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
@@ -447,6 +685,7 @@ static int fsmonitor_run_daemon(void)
 
 	ipc_server_free(state.ipc_server_data);
 
+	fsmonitor_release_token_item(&state.token_item);
 	pthread_cond_destroy(&state.cookies_cond);
 	pthread_mutex_destroy(&state.cookies_lock);
 	pthread_mutex_destroy(&state.queue_update_lock);
@@ -607,15 +846,6 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 
 // TODO BIG PICTURE QUESTION:
 // TODO Is there an inherent race condition in this whole thing?
-// TODO The client asks for all changes since a given timestamp.
-// TODO The server creates a cookie file and blocks the response
-// TODO until it appears.
-// TODO  [1] The cookie is created at a random time (WRT the client)
-// TODO      (and considering the race for the daemon to accept()
-// TODO      the client connection).
-// TODO  [2] The fs notify code handles events in batches
-// TODO  [3] The response is everything from the requested timestamp
-// TODO      thru the end of the batch (another bit of randomness).
 // TODO
 // TODO I'm wondering if the client should create the cookie file
 // TODO and then ask for everything from a given timestamp UPTO AND

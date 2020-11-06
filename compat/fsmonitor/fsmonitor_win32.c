@@ -10,106 +10,7 @@ struct fsmonitor_daemon_backend_data
 	HANDLE hListener[2];
 #define LISTENER_SHUTDOWN 0
 #define LISTENER_HAVE_DATA 1
-
-	struct strbuf token_sid;
-	uint64_t token_seq_nr;
 };
-
-/*
- * Requests to and from a FSMonitor Protocol V2 provider use an opaque
- * "token" as a virtual timestamp.  Clients can request a summary of all
- * created/deleted/modified files relative to a token.  In the response,
- * clients receive a new token for the next (relative) request.
- *
- *
- * Token Format
- * ============
- *
- * The contents of the token are private and provider-specific.
- *
- * For the internal fsmonitor--daemon, we define a token as follows:
- *
- *     ":internal:" <session_id> ":" <sequence_nr>
- *
- * The <session_id> is an arbitrary OPAQUE string, such as a GUID,
- * UUID, or {timestamp,pid}.  It is used to group all file system
- * events that happened during the lifespan of an instance of the
- * daemon.
- *
- *     Unlike FSMonitor Protocol V1, it is not defined as a timestamp
- *     and does not define less-than/greater-than relationships.
- *     (There are too many race conditions to rely on file system
- *     event timestamps.)
- *
- * The <sequence_nr> is a simple integer incremented for each file
- * system event received.  When a new <session_id> is created, the
- * <sequence_nr> is reset.
- *
- *
- * About Session Ids
- * =================
- *
- * A new <session_id> is created each time the daemon is started.
- *
- * Token Reset(1): A new <session_id> is also created if the daemon
- * loses sync with the file system notification mechanism.
- *
- * Token Reset(2): A new <session_id> MIGHT also be created when
- * complex file system operations are performed.  For example, a
- * directory rename/move/delete sequence that implicitly affects
- * tracked files within.
- *
- * When the daemon resets the token <session_id>, it is free to
- * discard all cached file system events.  By construction, a token
- * reset means that the daemon cannot completely represent the set of
- * file system changes and therefore cannot make any assurances to the
- * client.
- *
- * Clients that present a token with a stale (non-current)
- * <session_id> will always be given a trivial response.
- */
-static void make_new_session_id(struct strbuf *buf_new_sid)
-{
-	static int test_env_value = -1;
-
-	strbuf_reset(buf_new_sid);
-
-	if (test_env_value < 0)
-		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_SID", 0);
-
-	if (!test_env_value) {
-		/*
-		 * For now, just use {timestamp,pid} because linking
-		 * in a GUID or UUID library just adds complexity that
-		 * we don't need right now.
-		 */
-		struct timeval tv;
-		struct tm tm;
-		time_t secs;
-
-		gettimeofday(&tv, NULL);
-		secs = tv.tv_sec;
-		gmtime_r(&secs, &tm);
-
-		strbuf_addf(buf_new_sid, "%d.%4d%02d%02dT%02d%02d%02d.%06ldZ",
-			    getpid(),
-			    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-			    tm.tm_hour, tm.tm_min, tm.tm_sec,
-			    (long)tv.tv_usec);
-		return;
-	}
-
-	strbuf_addf(buf_new_sid, "test_%08x", test_env_value++);
-}
-
-#if 0
-static void make_new_token(struct strbuf *buf_new_token,
-			   const char *sid, uint64_t seq_nr)
-{
-	strbuf_reset(buf_new_token);
-	strbuf_addf(buf_new_token, ":internal:%s:%"PRIu64, sid, seq_nr);
-}
-#endif
 
 //////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////
@@ -215,9 +116,6 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 	data->hListener[LISTENER_SHUTDOWN] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	data->hListener[LISTENER_HAVE_DATA] = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-	strbuf_init(&data->token_sid, 0);
-	make_new_session_id(&data->token_sid);
-
 	state->backend_data = data;
 	return 0;
 }
@@ -239,55 +137,9 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 	if (data->hDir != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hDir);
 
-	strbuf_release(&data->token_sid);
-
 	FREE_AND_NULL(state->backend_data);
 }
 
-// TODO getnanotime() is broken on Windows.  The very first call in the
-// TODO process computes something in microseconds and multiplies the
-// TODO result by 1000.  Since the NTFS has 100ns resolution, we can
-// TODO accidentally under report.  We should set the initial value of
-// TODO `state->latest_update` more precisely.
-//
-// TODO I think the subsequent calls to getnanotime() in the body of the
-// TODO loop are also suspect.  There is an inherent race here, right?
-// TODO We are getting the clock before waiting (on both the lock and then
-// TODO on the kernel notify event).  The presumption is that the clock
-// TODO value will be earlier than the mod time of the first file in the
-// TODO buffer returned from ReadDirectoryChangesW() -- but we don't know
-// TODO that -- we don't control the batching.  (As I Understand It), the
-// TODO kernel maintains an internal buffer (hanging off of our directory
-// TODO handle) to collect events between our calls to RDCW(), so after
-// TODO calling RDCW() and getting a batch of changes (and emptying the
-// TODO kernel buffer) and while we are processing them, any new events
-// TODO would be added to the kernel buffer *WHILE WE ARE PROCESSING*
-// TODO the previous batch.  So the next time we call RDCW() we will get
-// TODO events from *BEFORE* our time stamp.  Right???
-//
-// TODO Also WRT getnanotime(), it returns a value based upon the system
-// TODO clock (such as gettimeofday() or QueryPerformance*()).  If it
-// TODO unclear if the system clock is in anyway related to the filesystem
-// TODO clock.  I know this sounds odd.  For a local NTFS filesystem, they
-// TODO are probably the same, but for a network mount or samba share, the
-// TODO FS clock is that of the remote host -- which may have a non-trivial
-// TODO amount of clock skew.  I think we should lstat() the first file
-// TODO received in the batch and make that the baseline for the iteration
-// TODO of the loop.
-//
-// TODO This listener thread should not release the main thread until it
-// TODO has established the `latest_update` baseline.  For example,
-// TODO register for FS notifications, create a "startup cookie" and
-// TODO wait for it to appear in the notification stream.  Mark that
-// TODO as the epoch for our queue and etc.  AND THEN release the main
-// TODO thread.
-//
-// TODO TODO I moved the initialization of `latest_update` to the main
-// TODO TODO thread to help simplify startup of this thread and the IPC
-// TODO TODO thread pool (and to eliminate the initial_mutex,cond vars.
-// TODO TODO I need to revisit what that field means and how the initial
-// TODO TODO timestamp should be set.
-//
 // TODO RDCW() has a note in [1] WRT short-names.  We should understand
 // TODO what it means.
 // TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
@@ -309,9 +161,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD count = 0;
 	int i;
+	uint64_t seq_nr = 0;
 
-	// TODO convert 'time' to a token_seq_nr...
-	uint64_t time = getnanotime();
+	pthread_mutex_lock(&state->queue_update_lock);
+	if (state->token_item.queue_head)
+		seq_nr = state->token_item.queue_head->token_seq_nr + 1;
+	pthread_mutex_unlock(&state->queue_update_lock);
 
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;
@@ -390,7 +245,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 				/* queue normal pathname */
 				queue_head = fsmonitor_private_add_path(queue_head,
 									path.buf,
-									time++);
+									seq_nr++);
 				if (!queue_tail)
 					queue_tail = queue_head;
 				break;

@@ -25,9 +25,15 @@ enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 /* Internal fsmonitor */
 
 struct fsmonitor_queue_item {
-	const char *interned_path; /* see strintern() */
-	uint64_t time;
 	const struct fsmonitor_queue_item *next;
+	const char *interned_path; /* see strintern() */
+	uint64_t token_seq_nr;
+};
+
+struct fsmonitor_token_item {
+	struct strbuf token_sid;
+	struct fsmonitor_queue_item *queue_head;
+	struct fsmonitor_queue_item *queue_tail;
 };
 
 enum fsmonitor_cookie_item_result {
@@ -46,11 +52,14 @@ struct fsmonitor_cookie_item {
 
 #define FSMONITOR_COOKIE_PREFIX ".watchman-cookie-git-"
 
-struct fsmonitor_daemon_backend_data;
+struct fsmonitor_daemon_backend_data; /* opaque platform-specific data */
 
 struct fsmonitor_daemon_state {
-	struct fsmonitor_queue_item *first;
-	uint64_t latest_update;
+
+	struct fsmonitor_token_item token_item;
+//	struct fsmonitor_queue_item *first;
+//	uint64_t latest_update;
+
 	pthread_t watcher_thread;
 	pthread_mutex_t queue_update_lock;
 	pthread_mutex_t cookies_lock;
@@ -101,6 +110,17 @@ void fsmonitor_publish_queue_paths(
 	struct fsmonitor_daemon_state *state,
 	struct fsmonitor_queue_item *queue_head,
 	struct fsmonitor_queue_item *queue_tail);
+
+/*
+ * Initialize a token-item.  This creates a new unique ID, such as a
+ * GUID or timestamp, that can be included in a FSMonitor protocol V2
+ * message to let us know if the current client is talking to the
+ * same instance of the daemon and that we have a contiguous range of
+ * file system notification events.
+ */
+void fsmonitor_init_new_token_item(struct fsmonitor_token_item *token);
+
+void fsmonitor_release_token_item(struct fsmonitor_token_item *token);
 
 /* This needs to be implemented by the backend */
 
