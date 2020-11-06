@@ -163,10 +163,8 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	int i;
 	uint64_t seq_nr;
 
-//	pthread_mutex_lock(&state->queue_update_lock);
-//	state->current_token_data = fsmonitor_new_token_data();
+top:
 	seq_nr = 1;
-//	pthread_mutex_unlock(&state->queue_update_lock);
 
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;
@@ -193,17 +191,23 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 		 * successful, but just returns zero bytes.)  This
 		 * means that we have lost event notifications.
 		 *
-		 * Reset our session so that we don't lie to our
-		 * clients.
+		 * Create a new token-data with a new session-id.
+		 * Discard our existing token-data and queued paths.
+		 * If there are active client threads, defer the free
+		 * to the last reader.
 		 */
 		if (!count) {
-			// TODO Maybe make this verbose only.
 			trace2_data_string("fsmonitor", NULL, "rdcw", "overflow");
 
-			// TODO dump cached events and reset token session id.
-			// TODO this also means dumping any cookies.
-			//
-			// TODO goto somewhere to avoid the loops below....
+			pthread_mutex_lock(&state->queue_update_lock);
+
+			if (state->current_token_data->client_ref_count == 0)
+				fsmonitor_free_token_data(state->current_token_data);
+			state->current_token_data = fsmonitor_new_token_data();
+
+			pthread_mutex_unlock(&state->queue_update_lock);
+
+			goto top;
 		}
 
 		p = buffer;
