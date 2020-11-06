@@ -161,12 +161,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD count = 0;
 	int i;
-	uint64_t seq_nr = 0;
+	uint64_t seq_nr;
 
-	pthread_mutex_lock(&state->queue_update_lock);
-	if (state->token_item.queue_head)
-		seq_nr = state->token_item.queue_head->token_seq_nr + 1;
-	pthread_mutex_unlock(&state->queue_update_lock);
+//	pthread_mutex_lock(&state->queue_update_lock);
+//	state->current_token_data = fsmonitor_new_token_data();
+	seq_nr = 1;
+//	pthread_mutex_unlock(&state->queue_update_lock);
 
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;

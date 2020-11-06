@@ -207,23 +207,22 @@ void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
  * Clients that present a token with a stale (non-current)
  * <session_id> will always be given a trivial response.
  */
-void fsmonitor_init_new_token_item(struct fsmonitor_token_item *token)
+struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 {
 	static int test_env_value = -1;
+	struct fsmonitor_token_data *token;
+
+	token = (struct fsmonitor_token_data *)xcalloc(1, sizeof(*token));
 
 	strbuf_init(&token->token_sid, 0);
 	token->queue_head = NULL;
 	token->queue_tail = NULL;
+	token->client_ref_count = 0;
 
 	if (test_env_value < 0)
 		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_SID", 0);
 
 	if (!test_env_value) {
-		/*
-		 * For now, just use {timestamp,pid} because linking
-		 * in a GUID or UUID library just adds complexity that
-		 * we don't need right now.
-		 */
 		struct timeval tv;
 		struct tm tm;
 		time_t secs;
@@ -238,23 +237,31 @@ void fsmonitor_init_new_token_item(struct fsmonitor_token_item *token)
 			    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 			    tm.tm_hour, tm.tm_min, tm.tm_sec,
 			    (long)tv.tv_usec);
-		return;
+	} else {
+		strbuf_addf(&token->token_sid, "test_%08x", test_env_value++);
 	}
 
-	strbuf_addf(&token->token_sid, "test_%08x", test_env_value++);
+	return token;
 }
 
-void fsmonitor_release_token_item(struct fsmonitor_token_item *token)
+void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 {
 	if (!token)
 		return;
 
+	assert(token->client_ref_count == 0);
+
 	strbuf_release(&token->token_sid);
 
-	// TODO free token->queue_head list
+	while (token->queue_head) {
+		struct fsmonitor_queue_item *next = token->queue_head->next;
+		free(token->queue_head);
+		token->queue_head = next;
+	}
 
-	token->queue_head = NULL;
 	token->queue_tail = NULL;
+
+	free(token);
 }
 
 /*
@@ -309,6 +316,7 @@ static int handle_client(void *data, const char *command,
 			 struct ipc_server_reply_data *reply_data)
 {
 	struct fsmonitor_daemon_state *state = data;
+	struct fsmonitor_token_data *token_data = NULL;
 	struct strbuf response_token = STRBUF_INIT;
 	struct strbuf requested_sid = STRBUF_INIT;
 	uintmax_t requested_oldest_seq_nr = 0;
@@ -369,19 +377,29 @@ static int handle_client(void *data, const char *command,
 		result = -1;
 		goto send_trivial_response;
 	}
-	if (strcmp(requested_sid.buf, state->token_item.token_sid.buf)) {
+	if (!state->current_token_data) {
+		/*
+		 * We don't have a token.  This means that the listener
+		 * thread has not yet started.
+		 */
+		pthread_mutex_unlock(&state->queue_update_lock);
+		result = 0;
+		goto send_trivial_response;
+	}
+	if (strcmp(requested_sid.buf,
+		   state->current_token_data->token_sid.buf)) {
 		/*
 		 * The client last spoke to a different daemon
 		 * instance -OR- the daemon had to resync with
 		 * the filesystem (and lost events), so reject.
 		 */
-		error(_("fsmonitor: token-sid different '%s' '%s'"),
-		      requested_sid.buf, state->token_item.token_sid.buf);
 		pthread_mutex_unlock(&state->queue_update_lock);
-		result = -1;
+		result = 0;
+		trace2_data_string("fsmonitor", the_repository,
+				   "serve.token", "different");
 		goto send_trivial_response;
 	}
-	if (!state->token_item.queue_tail) {
+	if (!state->current_token_data->queue_tail) {
 		/*
 		 * The listener has not received any filesystem
 		 * events yet.
@@ -390,7 +408,8 @@ static int handle_client(void *data, const char *command,
 		result = 0;
 		goto send_trivial_response;
 	}
-	if (requested_oldest_seq_nr < state->token_item.queue_tail->token_seq_nr) {
+	if (requested_oldest_seq_nr <
+	    state->current_token_data->queue_tail->token_seq_nr) {
 		/*
 		 * The client wants older events that we have for
 		 * this token-sid.  This probably means that we have
@@ -398,17 +417,19 @@ static int handle_client(void *data, const char *command,
 		 */
 		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
 		      requested_oldest_seq_nr,
-		      state->token_item.queue_tail->token_seq_nr);
+		      state->current_token_data->queue_tail->token_seq_nr);
 		pthread_mutex_unlock(&state->queue_update_lock);
-		result = -1;
+		result = 0;
 		goto send_trivial_response;
 	}
 
 	pthread_mutex_unlock(&state->queue_update_lock);
 
 	/*
-	 * write out cookie file so the queue gets filled with all
-	 * the file system events that happen before the file gets written
+	 * Write a cookie file inside the directory being watched in an
+	 * effort to flush out existing filesystem events that we actually
+	 * care about.  Suspend this client until we see the filesystem
+	 * events for this cookie file.
 	 *
 	 * TODO Look at `fsmonitor_cookie_item_result` return value and
 	 * TODO consider doing something different if get !SEEN.
@@ -418,42 +439,58 @@ static int handle_client(void *data, const char *command,
 	 */
 	fsmonitor_wait_for_cookie(state);
 
-	/*
-	 * The client wants all events newer than the requested seq_nr.
-	 * 'state->token_item.queue_head' has the most recent event, but
-	 * is it being updated continuously by the listener thread.  We
-	 * can start with the current head and walk the queue chain and
-	 * send the items to the client.  This is a bit of an arbitrary
-	 * starting point -- that is, should we loop back if the current
-	 * head changes while we were sending existing items?
-	 *
-	 * But we cannot do that because the V2 protocol requires that
-	 * we send the new token as the first line in the response and
-	 * it needs to include the head seq-nr.
-	 */
 	pthread_mutex_lock(&state->queue_update_lock);
 
-	if (strcmp(requested_sid.buf, state->token_item.token_sid.buf)) {
+	if (strcmp(requested_sid.buf,
+		   state->current_token_data->token_sid.buf)) {
 		/*
 		 * Ack! The listener thread lost sync with the filesystem
 		 * and created a new token while we were waiting for the
 		 * cookie file to be created!  Just give up.
 		 */
 		error(_("fsmonitor: lost filesystem sync '%s' '%s'"),
-		      requested_sid.buf, state->token_item.token_sid.buf);
+		      requested_sid.buf,
+		      state->current_token_data->token_sid.buf);
 		pthread_mutex_unlock(&state->queue_update_lock);
-		result = -1;
+		result = 0;
 		goto send_trivial_response;
 	}
 
-	fsmonitor_format_response_token(&response_token,
-					&state->token_item.token_sid,
-					state->token_item.queue_head);
+	/*
+	 * We're going to hold onto a pointer to the current
+	 * token-data while we walk the contents of the queue.
+	 * During this time, we will NOT be under the lock.
+	 * So we ref-count it.
+	 *
+	 * This allows the listener thread to continue prepending
+	 * new queue-items to the token-data (which we'll ignore).
+	 *
+	 * AND it allows the listener thread to do a token-reset.
+	 */
+	token_data = state->current_token_data;
+	token_data->client_ref_count++;
 
-	// TODO We're going to hold onto a pointer to the item queue
-	// TODO for this token-item and walk it.  Do a ref-count increment
-	// TODO on this token-item, so the listener doesn't free it.
-	queue = state->token_item.queue_head;
+	queue = token_data->queue_head;
+
+	/*
+	 * FSMonitor Protocol V2 requires that we send a response header
+	 * with a "current token" and then all of the paths that changed
+	 * since the "requested token".
+	 *
+	 * TODO Note that this design is somewhat broken.  The listener
+	 * TODO listener thread is continuously updating the queue of
+	 * TODO items (prepending them to the list), so by the time we
+	 * TODO send the current list to the client, there may be more
+	 * TODO items present.  Granted, the request "everything since t0"
+	 * TODO is a bit arbitrary for a filesystem in motion.  Do we want
+	 * TODO to consider building the response path list in memory and
+	 * TODO loop-back to pick up any "extremely fresh" path items
+	 * TODO before building the response header and actually sending
+	 * TODO the response?
+	 */
+	fsmonitor_format_response_token(&response_token,
+					&token_data->token_sid,
+					token_data->queue_head);
 
 	pthread_mutex_unlock(&state->queue_update_lock);
 
@@ -490,6 +527,21 @@ static int handle_client(void *data, const char *command,
 	}
 
 	kh_release_str(shown);
+
+	pthread_mutex_lock(&state->queue_update_lock);
+	assert(token_data->client_ref_count > 0);
+	token_data->client_ref_count--;
+
+	if (token_data->client_ref_count == 0 &&
+	    token_data != state->current_token_data) {
+		/*
+		 * The listener thread did a token-reset and abandoned
+		 * our token-data.  We are the last reader, so free it.
+		 */
+		fsmonitor_free_token_data(token_data);
+	}
+	pthread_mutex_unlock(&state->queue_update_lock);
+
 	trace2_data_intmax("fsmonitor", the_repository, "serve.count", count);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.skipped-duplicates", duplicates);
 
@@ -502,8 +554,8 @@ static int handle_client(void *data, const char *command,
 send_trivial_response:
 	pthread_mutex_lock(&state->queue_update_lock);
 	fsmonitor_format_response_token(&response_token,
-					&state->token_item.token_sid,
-					state->token_item.queue_head);
+					&state->current_token_data->token_sid,
+					state->current_token_data->queue_head);
 	pthread_mutex_unlock(&state->queue_update_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
@@ -545,7 +597,7 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 }
 
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	const struct fsmonitor_queue_item *queue_head,
+	struct fsmonitor_queue_item *queue_head,
 	const char *path, uint64_t token_seq_nr)
 {
 	struct fsmonitor_queue_item *item;
@@ -580,21 +632,21 @@ void fsmonitor_publish_queue_paths(
 	assert(queue_tail);
 
 	pthread_mutex_lock(&state->queue_update_lock);
-	if (state->token_item.queue_head) {
+	if (state->current_token_data->queue_head) {
 		/*
 		 * The queue/list is implicitly sorted (by construction)
 		 * from newest to oldest.  And the items in the given
 		 * fragment are newer than anything already in the queue.
 		 */
 		assert(queue_tail->token_seq_nr >
-		       state->token_item.queue_head->token_seq_nr);
+		       state->current_token_data->queue_head->token_seq_nr);
 	}
 
-	queue_tail->next = state->token_item.queue_head;
-	state->token_item.queue_head = queue_head;
+	queue_tail->next = state->current_token_data->queue_head;
+	state->current_token_data->queue_head = queue_head;
 
-	if (!state->token_item.queue_tail)
-		state->token_item.queue_tail = queue_tail;
+	if (!state->current_token_data->queue_tail)
+		state->current_token_data->queue_tail = queue_tail;
 
 	pthread_mutex_unlock(&state->queue_update_lock);
 }
@@ -605,7 +657,18 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 
 	trace2_thread_start("fsm-listen");
 
+	pthread_mutex_lock(&state->queue_update_lock);
+	state->current_token_data = fsmonitor_new_token_data();
+	pthread_mutex_unlock(&state->queue_update_lock);
+
 	fsmonitor_listen__loop(state);
+
+	pthread_mutex_lock(&state->queue_update_lock);
+	if (state->current_token_data &&
+	    state->current_token_data->client_ref_count == 0)
+		fsmonitor_free_token_data(state->current_token_data);
+	state->current_token_data = NULL;
+	pthread_mutex_unlock(&state->queue_update_lock);
 
 	trace2_thread_exit();
 	return NULL;
@@ -621,7 +684,6 @@ static int fsmonitor_run_daemon(void)
 	pthread_mutex_init(&state.queue_update_lock, NULL);
 	pthread_mutex_init(&state.cookies_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
-	fsmonitor_init_new_token_item(&state.token_item);
 	state.error_code = 0;
 
 	if (fsmonitor_listen__ctor(&state))
@@ -640,7 +702,6 @@ static int fsmonitor_run_daemon(void)
 				 fsmonitor__ipc_threads,
 				 handle_client,
 				 &state)) {
-		fsmonitor_release_token_item(&state.token_item);
 		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
@@ -659,7 +720,6 @@ static int fsmonitor_run_daemon(void)
 		ipc_server_await(state.ipc_server_data);
 		ipc_server_free(state.ipc_server_data);
 
-		fsmonitor_release_token_item(&state.token_item);
 		pthread_cond_destroy(&state.cookies_cond);
 		pthread_mutex_destroy(&state.cookies_lock);
 		pthread_mutex_destroy(&state.queue_update_lock);
@@ -685,7 +745,6 @@ static int fsmonitor_run_daemon(void)
 
 	ipc_server_free(state.ipc_server_data);
 
-	fsmonitor_release_token_item(&state.token_item);
 	pthread_cond_destroy(&state.cookies_cond);
 	pthread_mutex_destroy(&state.cookies_lock);
 	pthread_mutex_destroy(&state.queue_update_lock);

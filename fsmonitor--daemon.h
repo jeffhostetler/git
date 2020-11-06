@@ -25,15 +25,16 @@ enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 /* Internal fsmonitor */
 
 struct fsmonitor_queue_item {
-	const struct fsmonitor_queue_item *next;
+	struct fsmonitor_queue_item *next;
 	const char *interned_path; /* see strintern() */
 	uint64_t token_seq_nr;
 };
 
-struct fsmonitor_token_item {
+struct fsmonitor_token_data {
 	struct strbuf token_sid;
 	struct fsmonitor_queue_item *queue_head;
 	struct fsmonitor_queue_item *queue_tail;
+	uint64_t client_ref_count;
 };
 
 enum fsmonitor_cookie_item_result {
@@ -55,18 +56,18 @@ struct fsmonitor_cookie_item {
 struct fsmonitor_daemon_backend_data; /* opaque platform-specific data */
 
 struct fsmonitor_daemon_state {
-
-	struct fsmonitor_token_item token_item;
-//	struct fsmonitor_queue_item *first;
-//	uint64_t latest_update;
-
 	pthread_t watcher_thread;
+
+	/* `current_token_data` is locked under state->queue_update_lock */
+	struct fsmonitor_token_data *current_token_data;
 	pthread_mutex_t queue_update_lock;
+
 	pthread_mutex_t cookies_lock;
 	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
 	struct string_list cookie_list;
+
 	int error_code;
 	struct fsmonitor_daemon_backend_data *backend_data;
 
@@ -98,7 +99,7 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
  * Returns the new head of the list.
  */
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	const struct fsmonitor_queue_item *queue_head,
+	struct fsmonitor_queue_item *queue_head,
 	const char *path, uint64_t time);
 
 /*
@@ -112,15 +113,14 @@ void fsmonitor_publish_queue_paths(
 	struct fsmonitor_queue_item *queue_tail);
 
 /*
- * Initialize a token-item.  This creates a new unique ID, such as a
+ * Create a new token_data.  This creates a new unique ID, such as a
  * GUID or timestamp, that can be included in a FSMonitor protocol V2
  * message to let us know if the current client is talking to the
  * same instance of the daemon and that we have a contiguous range of
  * file system notification events.
  */
-void fsmonitor_init_new_token_item(struct fsmonitor_token_item *token);
-
-void fsmonitor_release_token_item(struct fsmonitor_token_item *token);
+struct fsmonitor_token_data *fsmonitor_new_token_data(void);
+void fsmonitor_free_token_data(struct fsmonitor_token_data *token);
 
 /* This needs to be implemented by the backend */
 
