@@ -47,7 +47,6 @@ enum fsmonitor_cookie_item_result {
 struct fsmonitor_cookie_item {
 	struct hashmap_entry entry;
 	const char *name;
-	/* `result` is locked under state->cookies_lock */
 	enum fsmonitor_cookie_item_result result;
 };
 
@@ -57,12 +56,10 @@ struct fsmonitor_daemon_backend_data; /* opaque platform-specific data */
 
 struct fsmonitor_daemon_state {
 	pthread_t watcher_thread;
+	pthread_mutex_t main_lock;
 
-	/* `current_token_data` is locked under state->queue_update_lock */
 	struct fsmonitor_token_data *current_token_data;
-	pthread_mutex_t queue_update_lock;
 
-	pthread_mutex_t cookies_lock;
 	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
@@ -78,6 +75,11 @@ struct fsmonitor_daemon_state {
  */
 void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
 				const struct string_list *cookie_names);
+
+/*
+ * Set _ABORT on all pending cookies and wake up all client threads.
+ */
+void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state);
 
 enum fsmonitor_path_type {
 	IS_WORKTREE_PATH = 0,

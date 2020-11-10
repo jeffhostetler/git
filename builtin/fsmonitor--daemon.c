@@ -75,11 +75,11 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	struct fsmonitor_cookie_item cookie;
 	char *cookie_path;
 	struct strbuf cookie_filename = STRBUF_INIT;
-	volatile int my_cookie_seq;
+	int my_cookie_seq;
 
-	pthread_mutex_lock(&state->cookies_lock);
+	pthread_mutex_lock(&state->main_lock);
+
 	my_cookie_seq = state->cookie_seq++;
-	pthread_mutex_unlock(&state->cookies_lock);
 
 	// TODO This assumes that .git is a directory.  We need to
 	// TODO figure out where to put the cookie files when .git
@@ -99,9 +99,8 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	// TODO returning, but do all coce paths guarantee that it is
 	// TODO removed from the hashmap before this stack frame returns?
 
-	pthread_mutex_lock(&state->cookies_lock);
 	hashmap_add(&state->cookies, &cookie.entry);
-	pthread_mutex_unlock(&state->cookies_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	cookie_path = git_pathdup("%s", cookie.name);
 	fd = open(cookie_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -117,18 +116,18 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		// TODO Windows, maybe let the listener thread (which is
 		// TODO getting regular events) set a FCIR_TIMEOUT bit...
 
-		pthread_mutex_lock(&state->cookies_lock);
+		pthread_mutex_lock(&state->main_lock);
 		while (cookie.result == FCIR_INIT)
 			pthread_cond_wait(&state->cookies_cond,
-					  &state->cookies_lock);
+					  &state->main_lock);
 
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
-		pthread_mutex_unlock(&state->cookies_lock);
+		pthread_mutex_unlock(&state->main_lock);
 	} else {
-		pthread_mutex_lock(&state->cookies_lock);
+		pthread_mutex_lock(&state->main_lock);
 		cookie.result = FCIR_ERROR;
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
-		pthread_mutex_unlock(&state->cookies_lock);
+		pthread_mutex_unlock(&state->main_lock);
 	}
 
 	free((char*)cookie.name);
@@ -142,7 +141,7 @@ void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
 	int k;
 	int nr_seen = 0;
 
-	pthread_mutex_lock(&state->cookies_lock);
+	pthread_mutex_lock(&state->main_lock);
 
 	for (k = 0; k < cookie_names->nr; k++) {
 		struct fsmonitor_cookie_item key;
@@ -161,7 +160,26 @@ void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
 	if (nr_seen)
 		pthread_cond_broadcast(&state->cookies_cond);
 
-	pthread_mutex_unlock(&state->cookies_lock);
+	pthread_mutex_unlock(&state->main_lock);
+}
+
+void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
+{
+	struct hashmap_iter iter;
+	struct fsmonitor_cookie_item *cookie;
+	int nr_aborted = 0;
+
+	pthread_mutex_lock(&state->main_lock);
+
+	hashmap_for_each_entry(&state->cookies, &iter, cookie, entry) {
+		cookie->result = FCIR_ABORT;
+		nr_aborted++;
+	}
+	
+	if (nr_aborted)
+		pthread_cond_broadcast(&state->cookies_cond);
+
+	pthread_mutex_unlock(&state->main_lock);
 }
 
 /*
@@ -378,13 +396,13 @@ static int handle_client(void *data, const char *command,
 
 	/* try V2 token */
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 
 	if (fsmonitor_parse_client_token(command, &requested_sid,
 					 &requested_oldest_seq_nr)) {
 		error(_("fsmonitor: invalid V2 protocol token '%s'"),
 		      command);
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = -1;
 		goto send_trivial_response;
 	}
@@ -393,7 +411,7 @@ static int handle_client(void *data, const char *command,
 		 * We don't have a token.  This means that the listener
 		 * thread has not yet started.
 		 */
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
 	}
@@ -404,7 +422,7 @@ static int handle_client(void *data, const char *command,
 		 * instance -OR- the daemon had to resync with
 		 * the filesystem (and lost events), so reject.
 		 */
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		trace2_data_string("fsmonitor", the_repository,
 				   "serve.token", "different");
@@ -415,7 +433,7 @@ static int handle_client(void *data, const char *command,
 		 * The listener has not received any filesystem
 		 * events yet.
 		 */
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
 	}
@@ -429,12 +447,12 @@ static int handle_client(void *data, const char *command,
 		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
 		      requested_oldest_seq_nr,
 		      state->current_token_data->queue_tail->token_seq_nr);
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
 	}
 
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	/*
 	 * Write a cookie file inside the directory being watched in an
@@ -450,7 +468,7 @@ static int handle_client(void *data, const char *command,
 	 */
 	fsmonitor_wait_for_cookie(state);
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 
 	if (strcmp(requested_sid.buf,
 		   state->current_token_data->token_sid.buf)) {
@@ -462,7 +480,7 @@ static int handle_client(void *data, const char *command,
 		error(_("fsmonitor: lost filesystem sync '%s' '%s'"),
 		      requested_sid.buf,
 		      state->current_token_data->token_sid.buf);
-		pthread_mutex_unlock(&state->queue_update_lock);
+		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
 	}
@@ -504,7 +522,7 @@ static int handle_client(void *data, const char *command,
 					&token_data->token_sid,
 					token_data->queue_head);
 
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
 	trace2_data_string("fsmonitor", the_repository, "serve.token",
@@ -540,12 +558,12 @@ static int handle_client(void *data, const char *command,
 
 	kh_release_str(shown);
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 	if (token_data->client_ref_count > 0)
 		token_data->client_ref_count--;
 	should_free_token_data = (token_data->client_ref_count == 0 &&
 				  token_data != state->current_token_data);
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 	/*
 	 * If the listener thread did a token-reset and installed a new
 	 * token-data AND we are the last reader of this token-data, then
@@ -564,11 +582,11 @@ static int handle_client(void *data, const char *command,
 	return 0;
 
 send_trivial_response:
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 	fsmonitor_format_response_token(&response_token,
 					&state->current_token_data->token_sid,
 					state->current_token_data->queue_head);
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
 	trace2_data_string("fsmonitor", the_repository, "serve.token",
@@ -643,7 +661,7 @@ void fsmonitor_publish_queue_paths(
 
 	assert(queue_tail);
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 	if (state->current_token_data->queue_head) {
 		/*
 		 * The queue/list is implicitly sorted (by construction)
@@ -660,7 +678,7 @@ void fsmonitor_publish_queue_paths(
 	if (!state->current_token_data->queue_tail)
 		state->current_token_data->queue_tail = queue_tail;
 
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 }
 
 static void *fsmonitor_listen_thread_proc(void *_state)
@@ -669,18 +687,18 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 
 	trace2_thread_start("fsm-listen");
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 	state->current_token_data = fsmonitor_new_token_data();
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	fsmonitor_listen__loop(state);
 
-	pthread_mutex_lock(&state->queue_update_lock);
+	pthread_mutex_lock(&state->main_lock);
 	if (state->current_token_data &&
 	    state->current_token_data->client_ref_count == 0)
 		fsmonitor_free_token_data(state->current_token_data);
 	state->current_token_data = NULL;
-	pthread_mutex_unlock(&state->queue_update_lock);
+	pthread_mutex_unlock(&state->main_lock);
 
 	trace2_thread_exit();
 	return NULL;
@@ -691,8 +709,7 @@ static int fsmonitor_run_daemon(void)
 	struct fsmonitor_daemon_state state;
 
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
-	pthread_mutex_init(&state.queue_update_lock, NULL);
-	pthread_mutex_init(&state.cookies_lock, NULL);
+	pthread_mutex_init(&state.main_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
 	state.error_code = 0;
 
@@ -713,8 +730,7 @@ static int fsmonitor_run_daemon(void)
 				 handle_client,
 				 &state)) {
 		pthread_cond_destroy(&state.cookies_cond);
-		pthread_mutex_destroy(&state.cookies_lock);
-		pthread_mutex_destroy(&state.queue_update_lock);
+		pthread_mutex_destroy(&state.main_lock);
 		fsmonitor_listen__dtor(&state);
 
 		return error(_("could not start IPC thread pool"));
@@ -731,8 +747,7 @@ static int fsmonitor_run_daemon(void)
 		ipc_server_free(state.ipc_server_data);
 
 		pthread_cond_destroy(&state.cookies_cond);
-		pthread_mutex_destroy(&state.cookies_lock);
-		pthread_mutex_destroy(&state.queue_update_lock);
+		pthread_mutex_destroy(&state.main_lock);
 		fsmonitor_listen__dtor(&state);
 
 		return error(_("could not start fsmonitor listener thread"));
@@ -756,8 +771,7 @@ static int fsmonitor_run_daemon(void)
 	ipc_server_free(state.ipc_server_data);
 
 	pthread_cond_destroy(&state.cookies_cond);
-	pthread_mutex_destroy(&state.cookies_lock);
-	pthread_mutex_destroy(&state.queue_update_lock);
+	pthread_mutex_destroy(&state.main_lock);
 	fsmonitor_listen__dtor(&state);
 
 	return state.error_code;

@@ -188,24 +188,35 @@ top:
 		 * If the kernel overflows the buffer that we gave it
 		 * (between our calls to ReadDirectoryChangesW()), we
 		 * get back a buffer count of zero.  (The call is
-		 * successful, but just returns zero bytes.)  This
-		 * means that we have lost event notifications.
+		 * successful, but it just returns zero bytes.)  This
+		 * implies the following:
 		 *
-		 * Create a new token-data with a new session-id.
-		 * Discard our existing token-data and queued paths.
-		 * If there are active client threads, defer the free
-		 * to the last reader.
+		 * [1] We are missing events and longer have a complete
+		 *     history of the directory (relative to our start
+		 *     token).  We should create a new token and start
+		 *     fresh (as if we just booted up).
+		 * [2] Some of those lost events may have been for cookie
+		 *     files.  We should assume the worst and abort them
+		 *     rather letting them starve.
+		 *
+		 * If there are no readers of the the current token data
+		 * series, we can free it now.  Otherwise, let the last
+		 * reader free it.  Either way, the old token data series
+		 * is no longer associated with our state data.
 		 */
 		if (!count) {
 			struct fsmonitor_token_data *free_me = NULL;
 
 			trace2_data_string("fsmonitor", NULL, "rdcw", "overflow");
 
-			pthread_mutex_lock(&state->queue_update_lock);
+			pthread_mutex_lock(&state->main_lock);
 			if (state->current_token_data->client_ref_count == 0)
 				free_me = state->current_token_data;
 			state->current_token_data = fsmonitor_new_token_data();
-			pthread_mutex_unlock(&state->queue_update_lock);
+			pthread_mutex_unlock(&state->main_lock);
+
+			fsmonitor_cookie_abort_all(state);
+
 			if (free_me)
 				fsmonitor_free_token_data(free_me);
 
