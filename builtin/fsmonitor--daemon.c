@@ -326,6 +326,7 @@ static int handle_client(void *data, const char *command,
 	kh_str_t *shown;
 	int hash_ret;
 	int result;
+	int should_free_token_data;
 
 	trace2_data_string("fsmonitor", the_repository, "command", command);
 
@@ -465,7 +466,8 @@ static int handle_client(void *data, const char *command,
 	 * This allows the listener thread to continue prepending
 	 * new queue-items to the token-data (which we'll ignore).
 	 *
-	 * AND it allows the listener thread to do a token-reset.
+	 * AND it allows the listener thread to do a token-reset
+	 * (and install a new `current_token_data`).
 	 */
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
@@ -529,18 +531,18 @@ static int handle_client(void *data, const char *command,
 	kh_release_str(shown);
 
 	pthread_mutex_lock(&state->queue_update_lock);
-	assert(token_data->client_ref_count > 0);
-	token_data->client_ref_count--;
-
-	if (token_data->client_ref_count == 0 &&
-	    token_data != state->current_token_data) {
-		/*
-		 * The listener thread did a token-reset and abandoned
-		 * our token-data.  We are the last reader, so free it.
-		 */
-		fsmonitor_free_token_data(token_data);
-	}
+	if (token_data->client_ref_count > 0)
+		token_data->client_ref_count--;
+	should_free_token_data = (token_data->client_ref_count == 0 &&
+				  token_data != state->current_token_data);
 	pthread_mutex_unlock(&state->queue_update_lock);
+	/*
+	 * If the listener thread did a token-reset and installed a new
+	 * token-data AND we are the last reader of this token-data, then
+	 * we need to free it.
+	 */
+	if (should_free_token_data)
+		fsmonitor_free_token_data(token_data);
 
 	trace2_data_intmax("fsmonitor", the_repository, "serve.count", count);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.skipped-duplicates", duplicates);

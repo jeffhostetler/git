@@ -197,15 +197,17 @@ top:
 		 * to the last reader.
 		 */
 		if (!count) {
+			struct fsmonitor_token_data *free_me = NULL;
+
 			trace2_data_string("fsmonitor", NULL, "rdcw", "overflow");
 
 			pthread_mutex_lock(&state->queue_update_lock);
-
 			if (state->current_token_data->client_ref_count == 0)
-				fsmonitor_free_token_data(state->current_token_data);
+				free_me = state->current_token_data;
 			state->current_token_data = fsmonitor_new_token_data();
-
 			pthread_mutex_unlock(&state->queue_update_lock);
+			if (free_me)
+				fsmonitor_free_token_data(free_me);
 
 			goto top;
 		}
