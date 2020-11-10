@@ -64,6 +64,8 @@ struct fsmonitor_daemon_state {
 	int cookie_seq;
 	struct hashmap cookies;
 
+	pthread_cond_t flush_cond;
+
 	int error_code;
 	struct fsmonitor_daemon_backend_data *backend_data;
 
@@ -91,6 +93,7 @@ enum fsmonitor_path_type {
 enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 
 #define FSMONITOR_DAEMON_QUIT -2
+#define FSMONITOR_DAEMON_FLUSH -3
 
 /*
  * Register a path as having been touched at a certain time.
@@ -169,6 +172,12 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state);
  * to wait for it.
  */
 void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state);
+
+/*
+ * Gently request that the fsmonitor listener thread flush cached
+ * token data.  This forces a token-reset and resync.
+ */
+void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state);
 
 #endif /* HAVE_FSMONITOR_DAEMON_BACKEND */
 #endif /* FSMONITOR_DAEMON_H */

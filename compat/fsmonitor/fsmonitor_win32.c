@@ -7,9 +7,10 @@ struct fsmonitor_daemon_backend_data
 {
 	HANDLE hDir;
 
-	HANDLE hListener[2];
+	HANDLE hListener[3];
 #define LISTENER_SHUTDOWN 0
 #define LISTENER_HAVE_DATA 1
+#define LISTENER_FLUSH_REQUESTED 2
 };
 
 //////////////////////////////////////////////////////////////////
@@ -46,6 +47,11 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	SetEvent(state->backend_data->hListener[LISTENER_SHUTDOWN]);
 }
 
+void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
+{
+	SetEvent(state->backend_data->hListener[LISTENER_FLUSH_REQUESTED]);
+}
+
 /*
  * Use OVERLAPPED IO to call ReadDirectoryChangesW() so that we can
  * wait for IO and/or a shutdown event.
@@ -66,6 +72,7 @@ static int read_directory_changes_overlapped(
 	memset(&overlapped, 0, sizeof(overlapped));
 
 	ResetEvent(state->backend_data->hListener[LISTENER_HAVE_DATA]);
+	ResetEvent(state->backend_data->hListener[LISTENER_FLUSH_REQUESTED]);
 	overlapped.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA];
 
 	if (!ReadDirectoryChangesW(state->backend_data->hDir,
@@ -80,7 +87,9 @@ static int read_directory_changes_overlapped(
 		return error("ReadDirectoryChangedW failed [GLE %ld]",
 			     GetLastError());
 
-	dwWait = WaitForMultipleObjects(2, state->backend_data->hListener, FALSE, INFINITE);
+	dwWait = WaitForMultipleObjects(
+		ARRAY_SIZE(state->backend_data->hListener),
+		state->backend_data->hListener, FALSE, INFINITE);
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA &&
 	    GetOverlappedResult(state->backend_data->hDir, &overlapped, count, TRUE))
@@ -91,6 +100,9 @@ static int read_directory_changes_overlapped(
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
 		return FSMONITOR_DAEMON_QUIT;
+
+	if (dwWait == WAIT_OBJECT_0 + LISTENER_FLUSH_REQUESTED)
+		return FSMONITOR_DAEMON_FLUSH;
 
 	return error("could not read directory changes");
 }
@@ -115,6 +127,7 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 
 	data->hListener[LISTENER_SHUTDOWN] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	data->hListener[LISTENER_HAVE_DATA] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	data->hListener[LISTENER_FLUSH_REQUESTED] = CreateEvent(NULL, TRUE, FALSE, NULL);
 
 	state->backend_data = data;
 	return 0;
@@ -133,6 +146,8 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 		CloseHandle(data->hListener[LISTENER_SHUTDOWN]);
 	if (data->hListener[LISTENER_HAVE_DATA] != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hListener[LISTENER_HAVE_DATA]);
+	if (data->hListener[LISTENER_FLUSH_REQUESTED] != INVALID_HANDLE_VALUE)
+		CloseHandle(data->hListener[LISTENER_FLUSH_REQUESTED]);
 
 	if (data->hDir != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hDir);
@@ -178,6 +193,11 @@ top:
 
 		case FSMONITOR_DAEMON_QUIT: /* shutdown event received */
 			goto shutdown_event;
+
+		case FSMONITOR_DAEMON_FLUSH: /* flush request received */
+			fsmonitor_force_resync(state);
+			pthread_cond_broadcast(&state->flush_cond);
+			goto top;
 
 		default:
 		case -1: /* IO error reading directory events */

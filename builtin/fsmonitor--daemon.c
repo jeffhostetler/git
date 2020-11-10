@@ -45,6 +45,12 @@ static int fsmonitor_stop_daemon(void)
 	warning(_("no native fsmonitor daemon available"));
 	return 0;
 }
+
+static int fsmonitor_flush_daemon(void)
+{
+	warning(_("no native fsmonitor daemon available"));
+	return 0;
+}
 #else
 #define FSMONITOR_DAEMON_IS_SUPPORTED 1
 
@@ -404,6 +410,7 @@ static int handle_client(void *data, const char *command,
 	 * We expect `command` to be of the form:
 	 *
 	 * <command> := quit NUL
+	 *            | flush NUL
 	 *            | <V1-time-since-epoch-ns> NUL
 	 *            | <V2-opaque-fsmonitor-token> NUL
 	 */
@@ -418,6 +425,31 @@ static int handle_client(void *data, const char *command,
 		 * fsmonitor listener thread)).
 		 */
 		return SIMPLE_IPC_QUIT;
+	}
+
+	if (!strcmp(command, "flush")) {
+		/*
+		 * Tell the listener thread to fake a token-resync and
+		 * flush everything we have cached (just like if lost
+		 * sync with the filesystem).
+		 *
+		 * Wait here until it has installed a new token-data
+		 * into our state.
+		 *
+		 * Then send a trivial response using the new token.
+		 */
+		const struct fsmonitor_token_data *token_data;
+
+		pthread_mutex_lock(&state->main_lock);
+		token_data = state->current_token_data;
+		fsmonitor_listen__request_flush(state);
+		while (token_data == state->current_token_data)
+			pthread_cond_wait(&state->flush_cond,
+					  &state->main_lock);
+		pthread_mutex_unlock(&state->main_lock);
+
+		result = 0;
+		goto send_trivial_response;
 	}
 
 	trace2_region_enter("fsmonitor", "handle_client", the_repository);
@@ -753,6 +785,7 @@ static int fsmonitor_run_daemon(void)
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.main_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
+	pthread_cond_init(&state.flush_cond, NULL);
 	state.error_code = 0;
 
 	if (fsmonitor_listen__ctor(&state))
@@ -772,6 +805,7 @@ static int fsmonitor_run_daemon(void)
 				 handle_client,
 				 &state)) {
 		pthread_cond_destroy(&state.cookies_cond);
+		pthread_cond_destroy(&state.flush_cond);
 		pthread_mutex_destroy(&state.main_lock);
 		fsmonitor_listen__dtor(&state);
 
@@ -789,6 +823,7 @@ static int fsmonitor_run_daemon(void)
 		ipc_server_free(state.ipc_server_data);
 
 		pthread_cond_destroy(&state.cookies_cond);
+		pthread_cond_destroy(&state.flush_cond);
 		pthread_mutex_destroy(&state.main_lock);
 		fsmonitor_listen__dtor(&state);
 
@@ -813,6 +848,7 @@ static int fsmonitor_run_daemon(void)
 	ipc_server_free(state.ipc_server_data);
 
 	pthread_cond_destroy(&state.cookies_cond);
+	pthread_cond_destroy(&state.flush_cond);
 	pthread_mutex_destroy(&state.main_lock);
 	fsmonitor_listen__dtor(&state);
 
@@ -860,26 +896,71 @@ static int fsmonitor_stop_daemon(void)
 
 	return 0;
 }
+
+/*
+ * Tell the daemon to flush its cache.  This is primarily a test
+ * feature used to simulate a loss of sync with the filesystem where
+ * we miss events.
+ */
+static int fsmonitor_flush_daemon(void)
+{
+	struct strbuf answer = STRBUF_INIT;
+	struct ipc_client_connect_options options
+		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
+	int ret;
+	int fd;
+	enum ipc_active_state state;
+
+	options.wait_if_busy = 1;
+	options.wait_if_not_found = 0;
+
+	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+	if (state != IPC_STATE__LISTENING) {
+		die("daemon not running");
+		return -1;
+	}
+
+	ret = ipc_client_send_command_to_fd(fd, "flush", &answer);
+	close(fd);
+
+	if (ret == -1) {
+		die("could sent flush command to daemon");
+		return -1;
+	}
+
+	write_in_full(1, answer.buf, answer.len);
+	strbuf_release(&answer);
+
+	return 0;
+}
+
 #endif
 
 int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 {
 	enum daemon_mode {
-		QUERY = 0, RUN, START, STOP, IS_RUNNING, IS_SUPPORTED
+		QUERY = 0, START, RUN, STOP, FLUSH, IS_RUNNING, IS_SUPPORTED
 	} mode = QUERY;
 	struct option options[] = {
-		OPT_CMDMODE(0, "query", &mode, N_("query the daemon"), QUERY),
-		OPT_CMDMODE(0, "run", &mode, N_("run the daemon"), RUN),
 		OPT_CMDMODE(0, "start", &mode, N_("run in the background"),
 			    START),
+		OPT_CMDMODE(0, "run", &mode,
+			    N_("run the daemon in the foreground"), RUN),
 		OPT_CMDMODE(0, "stop", &mode, N_("stop the running daemon"),
 			    STOP),
+		OPT_CMDMODE(0, "query", &mode,
+			    N_("query the daemon (starting if necessary)"),
+			    QUERY),
+		OPT_CMDMODE(0, "flush", &mode, N_("flush cached filesystem events"),
+			    FLUSH),
+
 		OPT_CMDMODE('t', "is-running", &mode,
 			    N_("test whether the daemon is running"),
 			    IS_RUNNING),
 		OPT_CMDMODE(0, "is-supported", &mode,
 			    N_("determine internal fsmonitor on this platform"),
 			    IS_SUPPORTED),
+
 		OPT_INTEGER(0, "ipc-threads",
 			    &fsmonitor__ipc_threads,
 			    N_("use <n> ipc threads")),
@@ -920,6 +1001,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		ret = fsmonitor_query_daemon(argv[0], &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
+
 		write_in_full(1, answer.buf, answer.len);
 		strbuf_release(&answer);
 
@@ -937,6 +1019,9 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 
 	if (mode == STOP)
 		return !!fsmonitor_stop_daemon();
+
+	if (mode == FLUSH)
+		return !!fsmonitor_flush_daemon();
 
 	// TODO Rather than explicitly testing whether the daemon is already running,
 	// TODO just try to gently create a new daemon and handle the error code.
