@@ -160,8 +160,8 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct strbuf path = STRBUF_INIT;
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD count = 0;
-	int i;
 	uint64_t seq_nr;
+	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 
 top:
 	seq_nr = 1;
@@ -223,12 +223,12 @@ top:
 			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 				/* special case cookie files within .git/ */
 
-				// TODO consider only signaling the cookie for the
-				// TODO delete event.  because deletes are more
+				// TODO consider only adding the cookie on the
+				// TODO file delete event.  because they are more
 				// TODO deterministic than just a simple close()
 				// TODO event. IIRC.
 
-				string_list_append(&state->cookie_list, path.buf + 5);
+				string_list_append(&cookie_list, path.buf + 5);
 				break;
 
 			case IS_INSIDE_DOT_GIT:
@@ -266,20 +266,10 @@ top:
 		queue_head = NULL;
 		queue_tail = NULL;
 
-		// TODO (more of a clarification actually)
-		// TODO The cookie_list is a list of the cookied observed
-		// TODO during the current FS notification event.  These
-		// TODO are used to wake up the corresponding `handle_client()`
-		// TODO threads.  Then we flush the list in preparation for
-		// TODO the next FS notification event.
-		// TODO
-		// TODO So the cookie_list is the currently observed set and
-		// TODO the hashmap is the eventually expected set.
-
-		for (i = 0; i < state->cookie_list.nr; i++)
-			fsmonitor_cookie_seen_trigger(state, state->cookie_list.items[i].string);
-
-		string_list_clear(&state->cookie_list, 0);
+		if (cookie_list.nr) {
+			fsmonitor_cookie_mark_seen(state, &cookie_list);
+			string_list_clear(&cookie_list, 0);
+		}
 	}
 
 force_error_stop:

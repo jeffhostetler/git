@@ -66,7 +66,6 @@ struct fsmonitor_daemon_state {
 	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
-	struct string_list cookie_list;
 
 	int error_code;
 	struct fsmonitor_daemon_backend_data *backend_data;
@@ -74,8 +73,11 @@ struct fsmonitor_daemon_state {
 	struct ipc_server_data *ipc_server_data;
 };
 
-void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
-				   const char *cookie_name);
+/*
+ * Mark these cookies as _SEEN and wake up the corresponding client threads.
+ */
+void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
+				const struct string_list *cookie_names);
 
 enum fsmonitor_path_type {
 	IS_WORKTREE_PATH = 0,

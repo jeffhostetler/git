@@ -136,21 +136,31 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	return cookie.result;
 }
 
-void fsmonitor_cookie_seen_trigger(struct fsmonitor_daemon_state *state,
-				   const char *cookie_name)
+void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
+				const struct string_list *cookie_names)
 {
-	struct fsmonitor_cookie_item key;
-	struct fsmonitor_cookie_item *cookie;
-
-	hashmap_entry_init(&key.entry, strhash(cookie_name));
-	key.name = cookie_name;
+	int k;
+	int nr_seen = 0;
 
 	pthread_mutex_lock(&state->cookies_lock);
-	cookie = hashmap_get_entry(&state->cookies, &key, entry, NULL);
-	if (cookie) {
-		cookie->result = FCIR_SEEN;
-		pthread_cond_broadcast(&state->cookies_cond);
+
+	for (k = 0; k < cookie_names->nr; k++) {
+		struct fsmonitor_cookie_item key;
+		struct fsmonitor_cookie_item *cookie;
+
+		key.name = cookie_names->items[k].string;
+		hashmap_entry_init(&key.entry, strhash(key.name));
+
+		cookie = hashmap_get_entry(&state->cookies, &key, entry, NULL);
+		if (cookie) {
+			cookie->result = FCIR_SEEN;
+			nr_seen++;
+		}
 	}
+
+	if (nr_seen)
+		pthread_cond_broadcast(&state->cookies_cond);
+
 	pthread_mutex_unlock(&state->cookies_lock);
 }
 
@@ -678,9 +688,7 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 
 static int fsmonitor_run_daemon(void)
 {
-	struct fsmonitor_daemon_state state = {
-		.cookie_list = STRING_LIST_INIT_DUP
-	};
+	struct fsmonitor_daemon_state state;
 
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.queue_update_lock, NULL);
