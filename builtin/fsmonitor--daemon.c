@@ -124,6 +124,9 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
 		pthread_mutex_unlock(&state->main_lock);
 	} else {
+		error_errno(_("could not create fsmonitor cookie '%s'"),
+			    cookie_path);
+
 		pthread_mutex_lock(&state->main_lock);
 		cookie.result = FCIR_ERROR;
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
@@ -293,6 +296,44 @@ void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 }
 
 /*
+ * Flush all of our cached data about the filesystem.  Call this if we
+ * lose sync with the filesystem and miss some notification events.
+ *
+ * [1] If we are missing events, then we no longer have a complete
+ *     history of the directory (relative to our current start token).
+ *     We should create a new token and start fresh (as if we just
+ *     booted up).
+ *
+ * [2] Some of those lost events may have been for cookie files.  We
+ *     should assume the worst and abort them rather letting them starve.
+ *
+ * If there are no readers of the the current token data series, we
+ * can free it now.  Otherwise, let the last reader free it.  Either
+ * way, the old token data series is no longer associated with our
+ * state data.
+ */
+void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_token_data *free_me = NULL;
+	struct fsmonitor_token_data *new_one = NULL;
+
+	trace2_data_string("fsmonitor", NULL, "fsm-listen", "overflow");
+
+	fsmonitor_cookie_abort_all(state);
+
+	new_one = fsmonitor_new_token_data();
+
+	pthread_mutex_lock(&state->main_lock);
+	if (state->current_token_data->client_ref_count == 0)
+		free_me = state->current_token_data;
+	state->current_token_data = new_one;
+	pthread_mutex_unlock(&state->main_lock);
+
+	if (free_me)
+		fsmonitor_free_token_data(free_me);
+}
+
+/*
  * Format an opaque token string to send to the client.
  */
 static void fsmonitor_format_response_token(
@@ -355,6 +396,7 @@ static int handle_client(void *data, const char *command,
 	int hash_ret;
 	int result;
 	int should_free_token_data;
+	enum fsmonitor_cookie_item_result cookie_result;
 
 	trace2_data_string("fsmonitor", the_repository, "command", command);
 
@@ -457,16 +499,16 @@ static int handle_client(void *data, const char *command,
 	/*
 	 * Write a cookie file inside the directory being watched in an
 	 * effort to flush out existing filesystem events that we actually
-	 * care about.  Suspend this client until we see the filesystem
+	 * care about.  Suspend this client thread until we see the filesystem
 	 * events for this cookie file.
-	 *
-	 * TODO Look at `fsmonitor_cookie_item_result` return value and
-	 * TODO consider doing something different if get !SEEN.
-	 * TODO For example, if we could not create the cookie file.
-	 * TODO Or if we need to change the token-sid and want to abort
-	 * TODO and send a trivial result.
 	 */
-	fsmonitor_wait_for_cookie(state);
+	cookie_result = fsmonitor_wait_for_cookie(state);
+	if (cookie_result != FCIR_SEEN) {
+		error(_("fsmonitor: cookie_result '%d' != SEEN"),
+		      cookie_result);
+		result = 0;
+		goto send_trivial_response;
+	}
 
 	pthread_mutex_lock(&state->main_lock);
 

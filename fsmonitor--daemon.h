@@ -126,6 +126,13 @@ void fsmonitor_publish_queue_paths(
 struct fsmonitor_token_data *fsmonitor_new_token_data(void);
 void fsmonitor_free_token_data(struct fsmonitor_token_data *token);
 
+/*
+ * If the platform-specific layer loses sync with the filesystem,
+ * it should call this to invalidate cached data and abort waiting
+ * threads.
+ */
+void fsmonitor_force_resync(struct fsmonitor_daemon_state *state);
+
 /* This needs to be implemented by the backend */
 
 /*
