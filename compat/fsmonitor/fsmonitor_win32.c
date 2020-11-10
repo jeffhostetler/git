@@ -179,7 +179,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 
 top:
-	seq_nr = 1;
+	seq_nr = 0;
 
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;

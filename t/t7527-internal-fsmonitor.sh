@@ -356,4 +356,58 @@ test_expect_success 'directory changes to a file' '
 	grep :\"dir1\" .git/trace
 '
 
+# The next few test cases exercise the token-resync code.  When filesystem
+# drops events (because of filesystem velocity or because the daemon isn't
+# polling fast enough), we need to discard the cached data (relative to the
+# current token) and start collecting events under a new token.
+#
+# the 'git fsmonitor--daemon --flush' command can be used to send a "flush"
+# message to a running daemon and ask it to do a flush/resync.
+
+test_expect_success 'flush cached data' '
+	test_when_finished "kill_repo test_flush" &&
+
+	git init test_flush &&
+
+	GIT_TEST_FSMONITOR_SID=true \
+	GIT_TRACE2_EVENT="$PWD/.git/trace_daemon" \
+		git -C test_flush fsmonitor--daemon --start &&
+	sleep 1 &&
+
+	# The daemon should have an initial token with no events in _0 and
+	# then a few (probably platform-specific number of) events in _1.
+	# These should both have the same <sid>.
+
+	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_0 &&
+	nul_to_q <actual_0 >actual_q0 &&
+
+	touch test_flush/file_1 &&
+	touch test_flush/file_2 &&
+	sleep 1 &&
+
+	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_1 &&
+	nul_to_q <actual_1 >actual_q1 &&
+
+	grep "file_1" actual_q1 &&
+
+	# Force a flush.  This will change the <sid>, reset the <seq_nr>, and
+	# flush the file data.  Then create some events and ensure that the file
+	# again appears in the cache.  It should have the new <sid>.
+
+	git -C test_flush fsmonitor--daemon --flush >flush_0 &&
+
+	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_2 &&
+	nul_to_q <actual_2 >actual_q2 &&
+
+	grep -v "file_1" actual_q2 &&
+
+	touch test_flush/file_1 &&
+	sleep 1 &&
+
+	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_3 &&
+	nul_to_q <actual_3 >actual_q3 &&
+
+	grep "file_1" actual_q3
+'
+
 test_done
