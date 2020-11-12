@@ -19,14 +19,7 @@ int fsmonitor_daemon__send_query_command(
 	const char *since_token,
 	struct strbuf *answer);
 
-// TODO deprecate the _is_running() api.  use either the _get_active_state()
-// TODO or the ipc _try_connect.  because (as described in simple-ipc.h)
-// TODO this is just a guess based on the existence of the named pipe or
-// TODO UDS socket.
-int fsmonitor_daemon_is_running(void);
 int fsmonitor_spawn_daemon(void);
-
-enum ipc_active_state fsmonitor_daemon_get_active_state(void);
 
 /* Internal fsmonitor */
 

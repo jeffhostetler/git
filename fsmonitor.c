@@ -515,21 +515,6 @@ done:
 	return ret;
 }
 
-enum ipc_active_state fsmonitor_daemon_get_active_state(void)
-{
-	return ipc_get_active_state(git_path_fsmonitor());
-}
-
-int fsmonitor_daemon_is_running(void)
-{
-	// TODO Finish conversion from _is_active to _get_active_state.
-	// TODO That is, change the prototype of this function to return
-	// TODO IPC_ state so that caller can decide whether to retry or
-	// TODO just give up.
-
-	return ipc_get_active_state(git_path_fsmonitor()) == IPC_STATE__LISTENING;
-}
-
 /*
  * Spawn a new long-running server in a background process.
  *

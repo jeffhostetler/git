@@ -22,36 +22,6 @@ static const char * const builtin_fsmonitor__daemon_usage[] = {
 
 #ifndef HAVE_FSMONITOR_DAEMON_BACKEND
 #define FSMONITOR_DAEMON_IS_SUPPORTED 0
-
-static int fsmonitor_daemon__send_query_command(
-	const char *unused_since_token,
-	struct strbuf *unused_answer)
-{
-	die(_("no native fsmonitor daemon available"));
-}
-
-static int fsmonitor_run_daemon(void)
-{
-	die(_("no native fsmonitor daemon available"));
-}
-
-static int fsmonitor_daemon_is_running(void)
-{
-	warning(_("no native fsmonitor daemon available"));
-	return 0;
-}
-
-static int fsmonitor_daemon__send_stop_command(void)
-{
-	warning(_("no native fsmonitor daemon available"));
-	return 0;
-}
-
-static int fsmonitor_daemon__send_flush_command(void)
-{
-	warning(_("no native fsmonitor daemon available"));
-	return 0;
-}
 #else
 #define FSMONITOR_DAEMON_IS_SUPPORTED 1
 
@@ -73,6 +43,16 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 	}
 
 	return git_default_config(var, value, cb);
+}
+
+static enum ipc_active_state fsmonitor_daemon_get_active_state(void)
+{
+	return ipc_get_active_state(git_path_fsmonitor());
+}
+
+static int fsmonitor_daemon_is_listening(void)
+{
+	return fsmonitor_daemon_get_active_state() == IPC_STATE__LISTENING;
 }
 
 static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
@@ -891,7 +871,7 @@ static int fsmonitor_daemon__send_stop_command(void)
 	// TODO after sending the quit command?
 
 	trace2_region_enter("fsmonitor", "polling-for-daemon-exit", NULL);
-	while (fsmonitor_daemon_is_running())
+	while (fsmonitor_daemon_get_active_state() == IPC_STATE__LISTENING)
 		sleep_millisec(50);
 	trace2_region_leave("fsmonitor", "polling-for-daemon-exit", NULL);
 
@@ -979,6 +959,13 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		die(_("invalid 'ipc-threads' value (%d)"),
 		    fsmonitor__ipc_threads);
 
+	if (mode == IS_SUPPORTED)
+		return !FSMONITOR_DAEMON_IS_SUPPORTED;
+
+#ifndef HAVE_FSMONITOR_DAEMON_BACKEND
+	die(_("internal fsmonitor daemon not supported"));
+#else
+
 	if (mode == QUERY) {
 		/*
 		 * Commands of the form `fsmonitor--daemon --query <token>`
@@ -1012,11 +999,8 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	if (argc != 0)
 		usage_with_options(builtin_fsmonitor__daemon_usage, options);
 
-	if (mode == IS_SUPPORTED)
-		return !FSMONITOR_DAEMON_IS_SUPPORTED;
-
 	if (mode == IS_RUNNING)
-		return !fsmonitor_daemon_is_running();
+		return !fsmonitor_daemon_is_listening();
 
 	if (mode == STOP)
 		return !!fsmonitor_daemon__send_stop_command();
@@ -1024,15 +1008,18 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	if (mode == FLUSH)
 		return !!fsmonitor_daemon__send_flush_command();
 
-	// TODO Rather than explicitly testing whether the daemon is already running,
-	// TODO just try to gently create a new daemon and handle the error code.
-	// TODO (If we don't want to do that, please add a trace region around this
-	// TODO call so that we know why we are probing the daemon.)
-
-	if (fsmonitor_daemon_is_running())
-		die("fsmonitor daemon is already running.");
-
 	if (mode == START) {
+		/*
+		 * Before we try to create a background daemon process, see
+		 * if a daemon process is already listening.  This makes it
+		 * easier for us to report an already-listening error to the
+		 * console, since our spawn/daemon can only report the success
+		 * of creating the background process (and not whether it
+		 * immediately exited).
+		 */
+		if (fsmonitor_daemon_is_listening())
+			die("internal fsmonitor daemon is already running.");
+
 #ifdef GIT_WINDOWS_NATIVE
 		/*
 		 * Windows cannot daemonize(); emulate it.
@@ -1049,10 +1036,21 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 #endif
 	}
 
-	if (mode == RUN)
+	if (mode == RUN) {
+		/*
+		 * Technically, we don't need to probe for an existing daemon
+		 * process, since we could just call `fsmonitor_run_daemon()`
+		 * and let it fail if the pipe/socket is busy.  But this gives
+		 * us a nicer error message.
+		 */
+		if (fsmonitor_daemon_is_listening())
+			die("internal fsmonitor daemon is already running.");
+
 		return !!fsmonitor_run_daemon();
+	}
 
 	BUG(_("Unhandled command mode %d"), mode);
+#endif
 }
 
 // TODO BIG PICTURE QUESTION:
