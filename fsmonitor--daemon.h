@@ -11,7 +11,13 @@
 
 extern const char *git_path_fsmonitor(void);
 
-int fsmonitor_query_daemon(const char *since, struct strbuf *answer);
+/*
+ * Connect to the fsmonitor daemon process (spawn it if necessary)
+ * and ask for the set of changed files since the given token.
+ */
+int fsmonitor_daemon__send_query_command(
+	const char *since_token,
+	struct strbuf *answer);
 
 // TODO deprecate the _is_running() api.  use either the _get_active_state()
 // TODO or the ipc _try_connect.  because (as described in simple-ipc.h)

@@ -159,7 +159,7 @@ static int query_fsmonitor(int version, const char *last_update, struct strbuf *
 
 	if (!strcmp(core_fsmonitor, ":internal:")) {
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
-		return fsmonitor_query_daemon(last_update, query_result);
+		return fsmonitor_daemon__send_query_command(last_update, query_result);
 #else
 		/* Fake a trivial response. */
 		warning(_("internal fsmonitor unavailable; falling back"));
@@ -430,7 +430,9 @@ void tweak_fsmonitor(struct index_state *istate)
 
 GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
 
-int fsmonitor_query_daemon(const char *token, struct strbuf *answer)
+int fsmonitor_daemon__send_query_command(
+	const char *since_token,
+	struct strbuf *answer)
 {
 	int ret = -1;
 	int fd = -1;
@@ -444,14 +446,15 @@ int fsmonitor_query_daemon(const char *token, struct strbuf *answer)
 
 	trace2_region_enter("fsm_client", "query-daemon", NULL);
 
-	trace2_data_string("fsm_client", NULL, "query-daemon/command", token);
+	trace2_data_string("fsm_client", NULL, "query-daemon/command",
+			   since_token);
 
 try_again:
 	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
 
 	switch (state) {
 	case IPC_STATE__LISTENING:
-		ret = ipc_client_send_command_to_fd(fd, token, answer);
+		ret = ipc_client_send_command_to_fd(fd, since_token, answer);
 		close(fd);
 
 		trace2_data_intmax("fsm_client", NULL,

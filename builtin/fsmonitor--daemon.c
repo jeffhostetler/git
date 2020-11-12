@@ -23,8 +23,9 @@ static const char * const builtin_fsmonitor__daemon_usage[] = {
 #ifndef HAVE_FSMONITOR_DAEMON_BACKEND
 #define FSMONITOR_DAEMON_IS_SUPPORTED 0
 
-static int fsmonitor_query_daemon(const char *unused_since,
-				  struct strbuf *unused_answer)
+static int fsmonitor_daemon__send_query_command(
+	const char *unused_since_token,
+	struct strbuf *unused_answer)
 {
 	die(_("no native fsmonitor daemon available"));
 }
@@ -40,13 +41,13 @@ static int fsmonitor_daemon_is_running(void)
 	return 0;
 }
 
-static int fsmonitor_stop_daemon(void)
+static int fsmonitor_daemon__send_stop_command(void)
 {
 	warning(_("no native fsmonitor daemon available"));
 	return 0;
 }
 
-static int fsmonitor_flush_daemon(void)
+static int fsmonitor_daemon__send_flush_command(void)
 {
 	warning(_("no native fsmonitor daemon available"));
 	return 0;
@@ -859,7 +860,7 @@ static int fsmonitor_run_daemon(void)
  * If the daemon is running (in another process), ask it to quit and
  * wait for it to stop.
  */
-static int fsmonitor_stop_daemon(void)
+static int fsmonitor_daemon__send_stop_command(void)
 {
 	struct strbuf answer = STRBUF_INIT;
 	struct ipc_client_connect_options options
@@ -902,7 +903,7 @@ static int fsmonitor_stop_daemon(void)
  * feature used to simulate a loss of sync with the filesystem where
  * we miss events.
  */
-static int fsmonitor_flush_daemon(void)
+static int fsmonitor_daemon__send_flush_command(void)
 {
 	struct strbuf answer = STRBUF_INIT;
 	struct ipc_client_connect_options options
@@ -998,7 +999,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 			usage_with_options(builtin_fsmonitor__daemon_usage,
 					   options);
 
-		ret = fsmonitor_query_daemon(argv[0], &answer);
+		ret = fsmonitor_daemon__send_query_command(argv[0], &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
 
@@ -1018,10 +1019,10 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		return !fsmonitor_daemon_is_running();
 
 	if (mode == STOP)
-		return !!fsmonitor_stop_daemon();
+		return !!fsmonitor_daemon__send_stop_command();
 
 	if (mode == FLUSH)
-		return !!fsmonitor_flush_daemon();
+		return !!fsmonitor_daemon__send_flush_command();
 
 	// TODO Rather than explicitly testing whether the daemon is already running,
 	// TODO just try to gently create a new daemon and handle the error code.
