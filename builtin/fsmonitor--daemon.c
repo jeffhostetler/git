@@ -347,7 +347,7 @@ static void fsmonitor_format_response_token(
 	const struct strbuf *response_sid,
 	const struct fsmonitor_queue_item *queue_item)
 {
-	uint64_t seq_nr = (queue_item) ? queue_item->token_seq_nr : 0;
+	uint64_t seq_nr = (queue_item) ? queue_item->token_seq_nr + 1: 0;
 
 	strbuf_reset(response_token);
 	strbuf_addf(response_token, ":internal:%s:%"PRIu64,
