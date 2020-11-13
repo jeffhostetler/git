@@ -211,6 +211,8 @@ top:
 		 * length zero.)
 		 */
 		if (!count) {
+			trace2_data_string("fsmonitor", NULL, "fsm-listen/kernel",
+					   "overflow");
 			fsmonitor_force_resync(state);
 			goto top;
 		}
@@ -242,9 +244,9 @@ top:
 				/* .git directory deleted (or renamed away) */
 				if ((info->Action == FILE_ACTION_REMOVED) ||
 				    (info->Action == FILE_ACTION_RENAMED_OLD_NAME)) {
-					trace2_data_string(
-						"fsmonitor", NULL, "message",
-						".git directory was removed; quitting");
+					trace2_data_string("fsmonitor", NULL,
+							   "fsm-listen/dotgit",
+							   "removed");
 					goto force_shutdown;
 				}
 				break;

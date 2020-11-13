@@ -242,14 +242,6 @@ verify_status() {
 #
 # We `reset` and `clean` at the bottom of each test (and before stopping the
 # daemon) because these commands might implicitly restart the daemon.
-#
-# TODO These tests rely on the trace2_data_string() call at
-# TODO fsmonitor--daemon.c:360 which should be guarded with a verbose or
-# TODO converted to a trace[1] message or guarded with a GIT_TEST_ symbol
-# TODO because we don't want every OS notification causing a trace2 event
-# TODO and clogging up the telemetry stream....
-#
-# TODO Same for the message in fsmonitor_macos.c:167.
 
 clean_up_repo_and_stop_daemon () {
 	git reset --hard HEAD
@@ -261,99 +253,99 @@ clean_up_repo_and_stop_daemon () {
 test_expect_success 'edit some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	edit_files &&
 	sleep 1 &&
 
-	grep :\"dir1/modified\"  .git/trace &&
-	grep :\"dir2/modified\"  .git/trace &&
-	grep :\"modified\"       .git/trace &&
-	grep :\"dir1/untracked\" .git/trace
+	grep "^event: dir1/modified$"  .git/trace &&
+	grep "^event: dir2/modified$"  .git/trace &&
+	grep "^event: modified$"       .git/trace &&
+	grep "^event: dir1/untracked$" .git/trace
 '
 
 test_expect_success 'create some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	create_files &&
 	sleep 1 &&
 
-	grep :\"dir1/new\" .git/trace &&
-	grep :\"dir2/new\" .git/trace &&
-	grep :\"new\"      .git/trace
+	grep "^event: dir1/new$" .git/trace &&
+	grep "^event: dir2/new$" .git/trace &&
+	grep "^event: new$"      .git/trace
 '
 
 test_expect_success 'delete some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	delete_files &&
 	sleep 1 &&
 
-	grep :\"dir1/delete\" .git/trace &&
-	grep :\"dir2/delete\" .git/trace &&
-	grep :\"delete\"      .git/trace
+	grep "^event: dir1/delete$" .git/trace &&
+	grep "^event: dir2/delete$" .git/trace &&
+	grep "^event: delete$"      .git/trace
 '
 
 test_expect_success 'rename some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	rename_files &&
 	sleep 1 &&
 
-	grep :\"dir1/rename\"  .git/trace &&
-	grep :\"dir2/rename\"  .git/trace &&
-	grep :\"rename\"       .git/trace &&
-	grep :\"dir1/renamed\" .git/trace &&
-	grep :\"dir2/renamed\" .git/trace &&
-	grep :\"renamed\"      .git/trace
+	grep "^event: dir1/rename$"  .git/trace &&
+	grep "^event: dir2/rename$"  .git/trace &&
+	grep "^event: rename$"       .git/trace &&
+	grep "^event: dir1/renamed$" .git/trace &&
+	grep "^event: dir2/renamed$" .git/trace &&
+	grep "^event: renamed$"      .git/trace
 '
 
 test_expect_success 'rename directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	mv dirtorename dirrenamed &&
 	sleep 1 &&
 
-	grep :\"dirtorename/*\" .git/trace &&
-	grep :\"dirrenamed/*\"  .git/trace
+	grep "^event: dirtorename/*$" .git/trace &&
+	grep "^event: dirrenamed/*$"  .git/trace
 '
 
 test_expect_success 'file changes to directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	file_to_directory &&
 	sleep 1 &&
 
-	grep :\"delete\"     .git/trace &&
-	grep :\"delete/new\" .git/trace
+	grep "^event: delete$"     .git/trace &&
+	grep "^event: delete/new$" .git/trace
 '
 
 test_expect_success 'directory changes to a file' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace" git fsmonitor--daemon --start &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	directory_to_file &&
 	sleep 1 &&
 
-	grep :\"dir1\" .git/trace
+	grep "^event: dir1$" .git/trace
 '
 
 # The next few test cases exercise the token-resync code.  When filesystem
@@ -370,7 +362,7 @@ test_expect_success 'flush cached data' '
 	git init test_flush &&
 
 	GIT_TEST_FSMONITOR_TOKEN=true \
-	GIT_TRACE2_EVENT="$PWD/.git/trace_daemon" \
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace_daemon" \
 		git -C test_flush fsmonitor--daemon --start &&
 	sleep 1 &&
 

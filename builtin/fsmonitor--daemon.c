@@ -309,8 +309,6 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
 	struct fsmonitor_token_data *free_me = NULL;
 	struct fsmonitor_token_data *new_one = NULL;
 
-	trace2_data_string("fsmonitor", NULL, "fsm-listen", "flush");
-
 	fsmonitor_cookie_abort_all(state);
 
 	new_one = fsmonitor_new_token_data();
@@ -584,6 +582,8 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	trace2_data_string("fsmonitor", the_repository, "serve.token",
 			   response_token.buf);
 
+	trace_printf_key(&trace_fsmonitor, "requested token: %s", command);
+
 	shown = kh_init_str();
 	while (queue && queue->token_seq_nr >= requested_oldest_seq_nr) {
 		if (kh_get_str(shown, queue->interned_path) != kh_end(shown))
@@ -603,16 +603,17 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 				  queue->interned_path, strlen(queue->interned_path) + 1) < 0)
 				break;
 
-			// TODO perhaps guard this with a verbose setting?
+			trace_printf_key(&trace_fsmonitor, "send[%"PRIuMAX"]: %s",
+					 count, queue->interned_path);
 
-			trace2_data_string("fsmonitor", the_repository,
-					   "serve.path", queue->interned_path);
 			count++;
 		}
 		queue = queue->next;
 	}
 
 	kh_release_str(shown);
+
+	trace_printf_key(&trace_fsmonitor, "response token: %s", response_token.buf);
 
 	pthread_mutex_lock(&state->main_lock);
 	if (token_data->client_ref_count > 0)
@@ -713,8 +714,7 @@ struct fsmonitor_queue_item *fsmonitor_private_add_path(
 		assert(token_seq_nr > queue_head->token_seq_nr);
 	}
 
-	// TODO maybe only emit this when verbose
-	trace2_data_string("fsmonitor", the_repository, "path", path);
+	trace_printf_key(&trace_fsmonitor, "event: %s", path);
 
 	item = xmalloc(sizeof(*item));
 	item->interned_path = strintern(path);
