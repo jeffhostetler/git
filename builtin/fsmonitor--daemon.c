@@ -1068,3 +1068,19 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 // TODO      connection is established.
 // TODO  [4] The client could decide the timeout (and just hang up).
 //
+
+
+//////////////////////////////////////////////////////////////////
+// TODO How does all of this work when ".git" is a file?
+// TODO   [] Consider submodules
+// TODO   [] Consider worktree feature
+// TODO   [] Cookie files are broken
+//
+// TODO Need to trim ancient items from queue list.
+// TODO   [] When the .git/index is updated, future commands will
+// TODO      be relative to the token contained within it.  So we
+// TODO      don't need to hang onto ancient events that would only
+// TODO      be referenced by an older version of the index.
+// TODO   [] So perhaps after the index is updated and a generous
+// TODO      grace period (for slow commands), we can truncate the
+// TODO      current queue list.

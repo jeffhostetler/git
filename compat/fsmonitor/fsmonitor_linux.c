@@ -5,6 +5,9 @@
 #include "khash.h"
 
 KHASH_INIT(path2wd, const char *, int, 1, kh_str_hash_func, kh_str_hash_equal);
+// TODO
+// TODO should the arg of the following macro be "key" rather than "ey" ???
+// TODO
 #define kh_int_hash_func(ey) key
 #define kh_int_hash_equal(a, b) ((a) == (b))
 KHASH_INIT(wd2path, int, const char *, 1, kh_int_hash_func, kh_int_hash_equal);
