@@ -938,7 +938,7 @@ static int fsmonitor_daemon__send_flush_command(void)
 int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 {
 	enum daemon_mode {
-		QUERY = 0, START, RUN, STOP, FLUSH, IS_RUNNING, IS_SUPPORTED
+		QUERY = 0, QUERY_INDEX, START, RUN, STOP, FLUSH, IS_RUNNING, IS_SUPPORTED
 	} mode = QUERY;
 	struct option options[] = {
 		OPT_CMDMODE(0, "start", &mode, N_("run in the background"),
@@ -950,6 +950,9 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		OPT_CMDMODE(0, "query", &mode,
 			    N_("query the daemon (starting if necessary)"),
 			    QUERY),
+		OPT_CMDMODE(0, "query-index", &mode,
+			    N_("query the daemon (starting if necessary) using token from index"),
+			    QUERY_INDEX),
 		OPT_CMDMODE(0, "flush", &mode, N_("flush cached filesystem events"),
 			    FLUSH),
 
@@ -1005,6 +1008,28 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 					   options);
 
 		ret = fsmonitor_daemon__send_query_command(argv[0], &answer);
+		if (ret < 0)
+			die(_("could not query fsmonitor daemon"));
+
+		write_in_full(1, answer.buf, answer.len);
+		strbuf_release(&answer);
+
+		return 0;
+	}
+
+	if (mode == QUERY_INDEX) {
+		struct strbuf answer = STRBUF_INIT;
+		struct index_state *istate = the_repository->index;
+		int ret;
+
+		setup_git_directory();
+		if (do_read_index(istate, the_repository->index_file, 0) < 0)
+			die("unable to read index file");
+		if (!istate->fsmonitor_last_update)
+			die("index file does not have fsmonitor extension");
+
+		ret = fsmonitor_daemon__send_query_command(
+			istate->fsmonitor_last_update, &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
 
