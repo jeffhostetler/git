@@ -309,7 +309,7 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
 	struct fsmonitor_token_data *free_me = NULL;
 	struct fsmonitor_token_data *new_one = NULL;
 
-	trace2_data_string("fsmonitor", NULL, "fsm-listen", "overflow");
+	trace2_data_string("fsmonitor", NULL, "fsm-listen", "flush");
 
 	fsmonitor_cookie_abort_all(state);
 
@@ -370,13 +370,11 @@ static int fsmonitor_parse_client_token(const char *buf_token,
 
 KHASH_INIT(str, const char *, int, 0, kh_str_hash_func, kh_str_hash_equal);
 
-static ipc_server_application_cb handle_client;
-
-static int handle_client(void *data, const char *command,
-			 ipc_server_reply_cb *reply,
-			 struct ipc_server_reply_data *reply_data)
+static int do_handle_client(struct fsmonitor_daemon_state *state,
+			    const char *command,
+			    ipc_server_reply_cb *reply,
+			    struct ipc_server_reply_data *reply_data)
 {
-	struct fsmonitor_daemon_state *state = data;
 	struct fsmonitor_token_data *token_data = NULL;
 	struct strbuf response_token = STRBUF_INIT;
 	struct strbuf requested_token_id = STRBUF_INIT;
@@ -389,8 +387,6 @@ static int handle_client(void *data, const char *command,
 	int result;
 	int should_free_token_data;
 	enum fsmonitor_cookie_item_result cookie_result;
-
-	trace2_data_string("fsmonitor", the_repository, "command", command);
 
 	/*
 	 * We expect `command` to be of the form:
@@ -409,6 +405,8 @@ static int handle_client(void *data, const char *command,
 		 * Tell the IPC thread pool to shutdown (which completes
 		 * the await in the main thread (which can stop the
 		 * fsmonitor listener thread)).
+		 *
+		 * There is no reply to the client.
 		 */
 		return SIMPLE_IPC_QUIT;
 	}
@@ -437,8 +435,6 @@ static int handle_client(void *data, const char *command,
 		result = 0;
 		goto send_trivial_response;
 	}
-
-	trace2_region_enter("fsmonitor", "handle_client", the_repository);
 
 	if (!skip_prefix(command, ":internal:", &p)) {
 		/* assume V1 timestamp or garbage */
@@ -638,7 +634,6 @@ static int handle_client(void *data, const char *command,
 	strbuf_release(&response_token);
 	strbuf_release(&requested_token_id);
 
-	trace2_region_leave("fsmonitor", "handle_client", the_repository);
 	return 0;
 
 send_trivial_response:
@@ -657,7 +652,25 @@ send_trivial_response:
 	strbuf_release(&response_token);
 	strbuf_release(&requested_token_id);
 
+	return result;
+}
+
+static ipc_server_application_cb handle_client;
+
+static int handle_client(void *data, const char *command,
+			 ipc_server_reply_cb *reply,
+			 struct ipc_server_reply_data *reply_data)
+{
+	struct fsmonitor_daemon_state *state = data;
+	int result;
+
+	trace2_region_enter("fsmonitor", "handle_client", the_repository);
+	trace2_data_string("fsmonitor", the_repository, "request", command);
+
+	result = do_handle_client(state, command, reply, reply_data);
+
 	trace2_region_leave("fsmonitor", "handle_client", the_repository);
+
 	return result;
 }
 
