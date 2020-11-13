@@ -30,7 +30,7 @@ struct fsmonitor_queue_item {
 };
 
 struct fsmonitor_token_data {
-	struct strbuf token_sid;
+	struct strbuf token_id;
 	struct fsmonitor_queue_item *queue_head;
 	struct fsmonitor_queue_item *queue_tail;
 	uint64_t client_ref_count;

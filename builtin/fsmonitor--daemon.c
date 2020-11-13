@@ -186,44 +186,49 @@ void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
  *
  * For the internal fsmonitor--daemon, we define a token as follows:
  *
- *     ":internal:" <session_id> ":" <sequence_nr>
+ *     ":internal:" <token_id> ":" <sequence_nr>
  *
- * The <session_id> is an arbitrary OPAQUE string, such as a GUID,
- * UUID, or {timestamp,pid}.  It is used to group all file system
- * events that happened during the lifespan of an instance of the
- * daemon.
+ * The <token_id> is an arbitrary OPAQUE string, such as a GUID,
+ * UUID, or {timestamp,pid}.  It is used to group all filesystem
+ * events that happened while the daemon was monitoring (and in-sync
+ * with the filesystem).
  *
  *     Unlike FSMonitor Protocol V1, it is not defined as a timestamp
  *     and does not define less-than/greater-than relationships.
  *     (There are too many race conditions to rely on file system
  *     event timestamps.)
  *
- * The <sequence_nr> is a simple integer incremented for each file
- * system event received.  When a new <session_id> is created, the
- * <sequence_nr> is reset.
+ * The <sequence_nr> is a simple integer incremented for each event
+ * received.  When a new <token_id> is created, the <sequence_nr> is
+ * reset to zero.
  *
  *
- * About Session Ids
- * =================
+ * About Token Ids
+ * ===============
  *
- * A new <session_id> is created each time the daemon is started.
+ * A new token_id is created:
  *
- * Token Reset(1): A new <session_id> is also created if the daemon
- * loses sync with the file system notification mechanism.
+ * [1] each time the daemon is started.
  *
- * Token Reset(2): A new <session_id> MIGHT also be created when
- * complex file system operations are performed.  For example, a
- * directory rename/move/delete sequence that implicitly affects
- * tracked files within.
+ * [2] any time that the daemon must re-sync with the filesystem
+ *     (such as when the kernel drops or we miss events on a very
+ *     active volume).
  *
- * When the daemon resets the token <session_id>, it is free to
- * discard all cached file system events.  By construction, a token
- * reset means that the daemon cannot completely represent the set of
- * file system changes and therefore cannot make any assurances to the
- * client.
+ * [3] in response to a client "flush" command (for dropped event
+ *     testing).
  *
- * Clients that present a token with a stale (non-current)
- * <session_id> will always be given a trivial response.
+ * [4] TODO/MAYBE after complex filesystem operations are performed,
+ *     such as a directory move sequence, that affects many files
+ *     within.
+ *
+ * When a new token_id is created, the daemon is free to discard all
+ * cached filesystem events associated with any previous token_ids.
+ * Events associated with a non-current token_id will never be sent
+ * to a client.  A token_id change implicitly means that the daemon
+ * has gap in its event history.
+ *
+ * Therefore, clients that present a token with a stale (non-current)
+ * token_id will always be given a trivial response.
  */
 struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 {
@@ -232,13 +237,13 @@ struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 
 	token = (struct fsmonitor_token_data *)xcalloc(1, sizeof(*token));
 
-	strbuf_init(&token->token_sid, 0);
+	strbuf_init(&token->token_id, 0);
 	token->queue_head = NULL;
 	token->queue_tail = NULL;
 	token->client_ref_count = 0;
 
 	if (test_env_value < 0)
-		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_SID", 0);
+		test_env_value = git_env_bool("GIT_TEST_FSMONITOR_TOKEN", 0);
 
 	if (!test_env_value) {
 		struct timeval tv;
@@ -249,14 +254,14 @@ struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 		secs = tv.tv_sec;
 		gmtime_r(&secs, &tm);
 
-		strbuf_addf(&token->token_sid,
+		strbuf_addf(&token->token_id,
 			    "%d.%4d%02d%02dT%02d%02d%02d.%06ldZ",
 			    getpid(),
 			    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 			    tm.tm_hour, tm.tm_min, tm.tm_sec,
 			    (long)tv.tv_usec);
 	} else {
-		strbuf_addf(&token->token_sid, "test_%08x", test_env_value++);
+		strbuf_addf(&token->token_id, "test_%08x", test_env_value++);
 	}
 
 	return token;
@@ -269,7 +274,7 @@ void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 
 	assert(token->client_ref_count == 0);
 
-	strbuf_release(&token->token_sid);
+	strbuf_release(&token->token_id);
 
 	while (token->queue_head) {
 		struct fsmonitor_queue_item *next = token->queue_head->next;
@@ -325,34 +330,34 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
  */
 static void fsmonitor_format_response_token(
 	struct strbuf *response_token,
-	const struct strbuf *response_sid,
+	const struct strbuf *response_token_id,
 	const struct fsmonitor_queue_item *queue_item)
 {
 	uint64_t seq_nr = (queue_item) ? queue_item->token_seq_nr + 1: 0;
 
 	strbuf_reset(response_token);
 	strbuf_addf(response_token, ":internal:%s:%"PRIu64,
-		    response_sid->buf, seq_nr);
+		    response_token_id->buf, seq_nr);
 }
 
 /*
  * Parse an opaque token from the client.
  */
 static int fsmonitor_parse_client_token(const char *buf_token,
-					struct strbuf *requested_sid,
+					struct strbuf *requested_token_id,
 					uint64_t *seq_nr)
 {
 	const char *p;
 	char *p_end;
 
-	strbuf_reset(requested_sid);
+	strbuf_reset(requested_token_id);
 	*seq_nr = 0;
 
 	if (!skip_prefix(buf_token, ":internal:", &p))
 		return 1;
 
 	while (*p && *p != ':')
-		strbuf_addch(requested_sid, *p++);
+		strbuf_addch(requested_token_id, *p++);
 	if (!*p++)
 		return 1;
 
@@ -374,7 +379,7 @@ static int handle_client(void *data, const char *command,
 	struct fsmonitor_daemon_state *state = data;
 	struct fsmonitor_token_data *token_data = NULL;
 	struct strbuf response_token = STRBUF_INIT;
-	struct strbuf requested_sid = STRBUF_INIT;
+	struct strbuf requested_token_id = STRBUF_INIT;
 	uintmax_t requested_oldest_seq_nr = 0;
 	const char *p;
 	const struct fsmonitor_queue_item *queue;
@@ -453,7 +458,7 @@ static int handle_client(void *data, const char *command,
 
 	pthread_mutex_lock(&state->main_lock);
 
-	if (fsmonitor_parse_client_token(command, &requested_sid,
+	if (fsmonitor_parse_client_token(command, &requested_token_id,
 					 &requested_oldest_seq_nr)) {
 		error(_("fsmonitor: invalid V2 protocol token '%s'"),
 		      command);
@@ -470,8 +475,8 @@ static int handle_client(void *data, const char *command,
 		result = 0;
 		goto send_trivial_response;
 	}
-	if (strcmp(requested_sid.buf,
-		   state->current_token_data->token_sid.buf)) {
+	if (strcmp(requested_token_id.buf,
+		   state->current_token_data->token_id.buf)) {
 		/*
 		 * The client last spoke to a different daemon
 		 * instance -OR- the daemon had to resync with
@@ -496,7 +501,7 @@ static int handle_client(void *data, const char *command,
 	    state->current_token_data->queue_tail->token_seq_nr) {
 		/*
 		 * The client wants older events that we have for
-		 * this token-sid.  This probably means that we have
+		 * this token_id.  This probably means that we have
 		 * flushed older events and now have a coverage gap.
 		 */
 		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
@@ -525,16 +530,16 @@ static int handle_client(void *data, const char *command,
 
 	pthread_mutex_lock(&state->main_lock);
 
-	if (strcmp(requested_sid.buf,
-		   state->current_token_data->token_sid.buf)) {
+	if (strcmp(requested_token_id.buf,
+		   state->current_token_data->token_id.buf)) {
 		/*
 		 * Ack! The listener thread lost sync with the filesystem
 		 * and created a new token while we were waiting for the
 		 * cookie file to be created!  Just give up.
 		 */
 		error(_("fsmonitor: lost filesystem sync '%s' '%s'"),
-		      requested_sid.buf,
-		      state->current_token_data->token_sid.buf);
+		      requested_token_id.buf,
+		      state->current_token_data->token_id.buf);
 		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
@@ -574,7 +579,7 @@ static int handle_client(void *data, const char *command,
 	 * TODO the response?
 	 */
 	fsmonitor_format_response_token(&response_token,
-					&token_data->token_sid,
+					&token_data->token_id,
 					token_data->queue_head);
 
 	pthread_mutex_unlock(&state->main_lock);
@@ -631,7 +636,7 @@ static int handle_client(void *data, const char *command,
 	trace2_data_intmax("fsmonitor", the_repository, "serve.skipped-duplicates", duplicates);
 
 	strbuf_release(&response_token);
-	strbuf_release(&requested_sid);
+	strbuf_release(&requested_token_id);
 
 	trace2_region_leave("fsmonitor", "handle_client", the_repository);
 	return 0;
@@ -639,7 +644,7 @@ static int handle_client(void *data, const char *command,
 send_trivial_response:
 	pthread_mutex_lock(&state->main_lock);
 	fsmonitor_format_response_token(&response_token,
-					&state->current_token_data->token_sid,
+					&state->current_token_data->token_id,
 					state->current_token_data->queue_head);
 	pthread_mutex_unlock(&state->main_lock);
 
@@ -650,7 +655,7 @@ send_trivial_response:
 	trace2_data_intmax("fsmonitor", the_repository, "serve.trivial", 1);
 
 	strbuf_release(&response_token);
-	strbuf_release(&requested_sid);
+	strbuf_release(&requested_token_id);
 
 	trace2_region_leave("fsmonitor", "handle_client", the_repository);
 	return result;

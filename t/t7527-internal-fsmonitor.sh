@@ -369,14 +369,14 @@ test_expect_success 'flush cached data' '
 
 	git init test_flush &&
 
-	GIT_TEST_FSMONITOR_SID=true \
+	GIT_TEST_FSMONITOR_TOKEN=true \
 	GIT_TRACE2_EVENT="$PWD/.git/trace_daemon" \
 		git -C test_flush fsmonitor--daemon --start &&
 	sleep 1 &&
 
 	# The daemon should have an initial token with no events in _0 and
 	# then a few (probably platform-specific number of) events in _1.
-	# These should both have the same <sid>.
+	# These should both have the same <token_id>.
 
 	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_0 &&
 	nul_to_q <actual_0 >actual_q0 &&
@@ -390,9 +390,9 @@ test_expect_success 'flush cached data' '
 
 	grep "file_1" actual_q1 &&
 
-	# Force a flush.  This will change the <sid>, reset the <seq_nr>, and
+	# Force a flush.  This will change the <token_id>, reset the <seq_nr>, and
 	# flush the file data.  Then create some events and ensure that the file
-	# again appears in the cache.  It should have the new <sid>.
+	# again appears in the cache.  It should have the new <token_id>.
 
 	git -C test_flush fsmonitor--daemon --flush >flush_0 &&
 
