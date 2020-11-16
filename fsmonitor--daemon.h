@@ -1,5 +1,5 @@
 #ifndef FSMONITOR_DAEMON_H
-#define FSMONTIOR_DAEMON_H
+#define FSMONITOR_DAEMON_H
 
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
 
@@ -107,6 +107,11 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
 	struct fsmonitor_queue_item *queue_head,
 	const char *path, uint64_t time);
+
+void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head);
+
+uint64_t fsmonitor_get_next_token_seq_nr(
+	struct fsmonitor_daemon_state *state);
 
 /*
  * Link the given private item queue into the official

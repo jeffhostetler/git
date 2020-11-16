@@ -179,7 +179,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 
 top:
-	seq_nr = 0;
+	seq_nr = fsmonitor_get_next_token_seq_nr(state);
 
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;
@@ -247,6 +247,11 @@ top:
 					trace2_data_string("fsmonitor", NULL,
 							   "fsm-listen/dotgit",
 							   "removed");
+
+					fsmonitor_free_private_paths(queue_head);
+					queue_head = NULL;
+					queue_tail = NULL;
+
 					goto force_shutdown;
 				}
 				break;

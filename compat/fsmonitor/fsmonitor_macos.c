@@ -165,6 +165,7 @@ static void log_flags_set(const char *path, const FSEventStreamEventFlags flag) 
 	if (flag & kFSEventStreamEventFlagItemCloned)
 		strbuf_addstr(&msg, "ItemCloned|");
 
+	// TODO cleanup trace2 and maybe use trace1
 	trace2_data_string("fsmonitor", the_repository, "fsevent", msg.buf);
 	strbuf_release(&msg);
 }
@@ -195,18 +196,16 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			     const FSEventStreamEventFlags event_flags[],
 			     const FSEventStreamEventId event_ids[])
 {
-	int i;
-	char **paths = (char **)event_paths;
-	struct fsmonitor_queue_item dummy, *queue = &dummy;
-	uint64_t time = getnanotime();
 	struct fsmonitor_daemon_state *state = ctx;
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+	char **paths = (char **)event_paths;
+	struct fsmonitor_queue_item *queue_head = NULL;
+	struct fsmonitor_queue_item *queue_tail = NULL;
+	struct string_list cookie_list = STRING_LIST_INIT_DUP;
+	int seq_nr;
+	int i;
 
-	/* Ensure strictly increasing timestamps */
-	pthread_mutex_lock(&state->queue_update_lock);
-	if (time <= state->latest_update)
-		time = state->latest_update + 1;
-	pthread_mutex_unlock(&state->queue_update_lock);
+	seq_nr = fsmonitor_get_next_token_seq_nr(state);
 
 	for (i = 0; i < num_of_events; i++) {
 		const char *path = paths[i] + data->watch_dir.len;
@@ -217,16 +216,42 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			len--;
 		}
 
+		/*
+		 * If event[i] is marked as dropped, we assume that we have
+		 * lost sync with the filesystem and should flush our cached
+		 * data.  We need to:
+		 * [1] Discard the list of queue-items that we were locally
+		 *     building.
+		 * [2] Abort/wake any threads waiting for a cookie.
+		 * [3] Flush the cached data and create a new token.
+		 *
+		 * We assume that any events that we received in this callback
+		 * (after event[i]) may still be valid.
+		 */
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
-			trace2_data_string("fsmonitor", the_repository, "message", "Dropped event");
-			fsmonitor_queue_path(&queue, "/", 1, time);
+			/*
+			 * see also kFSEventStreamEventFlagMustScanSubDirs
+			 */
+			trace2_data_string("fsmonitor", NULL,
+					   "fsm-listen/kernel", "dropped");
+
+			fsmonitor_free_private_paths(queue_head);
+			queue_head = NULL;
+			queue_tail = NULL;
+
+			string_list_clear(&cookie_list, 0);
+
+			fsmonitor_force_resync(state);
+			seq_nr = fsmonitor_get_next_token_seq_nr(state);
+
+			continue;
 		}
 
 		switch (fsmonitor_classify_path(path, len)) {
 		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 			/* special case cookie files within .git/ */
-			string_list_append(&state->cookie_list, path + 5);
+			string_list_append(&cookie_list, path + 5);
 			break;
 
 		case IS_INSIDE_DOT_GIT:
@@ -239,67 +264,69 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			 * we have to quit.
 			 */
 			if (ef_is_root_delete(event_flags[i])) {
-				trace2_data_string("fsmonitor", NULL, "message",
-						   ".git directory deleted; quiting");
-				data->shutdown_style = FORCE_SHUTDOWN;
-				CFRunLoopStop(data->rl);
-				return;
+				trace2_data_string("fsmonitor", NULL,
+						   "fsm-listen/dotgit",
+						   "removed");
+				goto force_shutdown;
 			}
 			if (ef_is_root_renamed(event_flags[i])) {
-				trace2_data_string("fsmonitor", NULL, "message",
-						   ".git directory renamed; quiting");
-				data->shutdown_style = FORCE_SHUTDOWN;
-				CFRunLoopStop(data->rl);
-				return;
+				trace2_data_string("fsmonitor", NULL,
+						   "fsm-listen/dotgit",
+						   "renamed");
+				goto force_shutdown;
 			}
 			break;
 
 		case IS_WORKTREE_PATH:
 		default:
 			/* try to queue normal pathnames */
+
+			// TODO ONLY-IF trace2 is enabled, should we call this.
 			log_flags_set(path, event_flags[i]);
 
 			/* TODO: fsevent could be marked as both a file and directory */
-			if ((event_flags[i] & kFSEventStreamEventFlagItemIsFile) &&
-			    fsmonitor_queue_path(&queue, path, len, time) < 0) {
-				error("could not queue '%s'; exiting", path);
-				data->shutdown_style = FORCE_ERROR_STOP;
-				CFRunLoopStop(data->rl);
-				return;
-			} else if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
+
+			if (event_flags[i] & kFSEventStreamEventFlagItemIsFile) {
+				queue_head = fsmonitor_private_add_path(
+					queue_head, path, seq_nr++);
+				if (!queue_tail)
+					queue_tail = queue_head;
+				break;
+			}
+
+			if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
 				char *p = xstrfmt("%s/", path);
-				if (fsmonitor_queue_path(&queue,
-							 p, len + 1,
-							 time) < 0) {
-					error("could not queue '%s'; exiting", p);
-					data->shutdown_style = FORCE_ERROR_STOP;
-					free(p);
-					CFRunLoopStop(data->rl);
-					return;
-				}
+				queue_head = fsmonitor_private_add_path(
+					queue_head, p, seq_nr++);
+				if (!queue_tail)
+					queue_tail = queue_head;
 				free(p);
+				break;
 			}
 
 			break;
 		}
 	}
 
-	/* Only update the queue if it changed */
-	if (queue != &dummy) {
-		pthread_mutex_lock(&state->queue_update_lock);
-		if (state->first)
-			state->first->previous = dummy.previous;
-		dummy.previous->next = state->first;
-		state->first = queue;
-		state->latest_update = time;
-		pthread_mutex_unlock(&state->queue_update_lock);
+	fsmonitor_publish_queue_paths(state, queue_head, queue_tail);
+	queue_head = NULL;
+	queue_tail = NULL;
+
+	if (cookie_list.nr) {
+		fsmonitor_cookie_mark_seen(state, &cookie_list);
+		string_list_clear(&cookie_list, 0);
 	}
 
-	for (i = 0; i < state->cookie_list.nr; i++) {
-		fsmonitor_cookie_seen_trigger(state, state->cookie_list.items[i].string);
-	}
+	return;
 
-	string_list_clear(&state->cookie_list, 0);
+force_shutdown:
+	fsmonitor_free_private_paths(queue_head);
+	queue_head = NULL;
+	queue_tail = NULL;
+
+	data->shutdown_style = FORCE_SHUTDOWN;
+	CFRunLoopStop(data->rl);
+	return;
 }
 
 int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
@@ -374,12 +401,20 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	CFRunLoopStop(data->rl);
 }
 
+void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
+{
+	// TODO implement this.
+	// TODO
+	// TODO need to inject state flag (under lock) and ...
+}
+
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data;
 
 	data = state->backend_data;
 
+	// TODO cleanup trace2 and maybe use trace1
 	trace2_printf("Start watching: '%s' for fsevents", data->watch_dir.buf);
 
 	data->rl = CFRunLoopGetCurrent();

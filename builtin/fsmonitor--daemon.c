@@ -267,6 +267,15 @@ struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 	return token;
 }
 
+void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head)
+{
+	while (queue_head) {
+		struct fsmonitor_queue_item *next = queue_head->next;
+		free(queue_head);
+		queue_head = next;
+	}
+}
+
 void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 {
 	if (!token)
@@ -276,12 +285,8 @@ void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 
 	strbuf_release(&token->token_id);
 
-	while (token->queue_head) {
-		struct fsmonitor_queue_item *next = token->queue_head->next;
-		free(token->queue_head);
-		token->queue_head = next;
-	}
-
+	fsmonitor_free_private_paths(token->queue_head);
+	token->queue_head = NULL;
 	token->queue_tail = NULL;
 
 	free(token);
@@ -376,7 +381,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	struct fsmonitor_token_data *token_data = NULL;
 	struct strbuf response_token = STRBUF_INIT;
 	struct strbuf requested_token_id = STRBUF_INIT;
-	uintmax_t requested_oldest_seq_nr = 0;
+	uint64_t requested_oldest_seq_nr = 0;
 	const char *p;
 	const struct fsmonitor_queue_item *queue;
 	intmax_t count = 0, duplicates = 0;
@@ -722,6 +727,19 @@ struct fsmonitor_queue_item *fsmonitor_private_add_path(
 	item->next = queue_head;
 
 	return item;
+}
+
+uint64_t fsmonitor_get_next_token_seq_nr(
+	struct fsmonitor_daemon_state *state)
+{
+	uint64_t seq_nr = 0;
+
+	pthread_mutex_lock(&state->main_lock);
+	if (state->current_token_data->queue_head)
+		seq_nr = state->current_token_data->queue_head->token_seq_nr + 1;
+	pthread_mutex_unlock(&state->main_lock);
+
+	return seq_nr;
 }
 
 void fsmonitor_publish_queue_paths(
