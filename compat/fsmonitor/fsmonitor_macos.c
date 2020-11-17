@@ -114,9 +114,9 @@ struct fsmonitor_daemon_backend_data
 	} shutdown_style;
 };
 
-static void log_flags_set(const char *path, const FSEventStreamEventFlags flag) {
+static void log_flags_set(const char *path, const FSEventStreamEventFlags flag)
+{
 	struct strbuf msg = STRBUF_INIT;
-	strbuf_addf(&msg, "%s flags: %u = ", path, flag);
 
 	if (flag & kFSEventStreamEventFlagMustScanSubDirs)
 		strbuf_addstr(&msg, "MustScanSubDirs|");
@@ -165,8 +165,9 @@ static void log_flags_set(const char *path, const FSEventStreamEventFlags flag) 
 	if (flag & kFSEventStreamEventFlagItemCloned)
 		strbuf_addstr(&msg, "ItemCloned|");
 
-	// TODO cleanup trace2 and maybe use trace1
-	trace2_data_string("fsmonitor", the_repository, "fsevent", msg.buf);
+	trace_printf_key(&trace_fsmonitor, "fsevent: '%s', flags=%u %s",
+			 path, flag, msg.buf);
+
 	strbuf_release(&msg);
 }
 
@@ -202,11 +203,12 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	struct fsmonitor_queue_item *queue_head = NULL;
 	struct fsmonitor_queue_item *queue_tail = NULL;
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
-	int seq_nr;
 	int i;
 
-	seq_nr = fsmonitor_get_next_token_seq_nr(state);
-
+	/*
+	 * Build a list of all filesystem changes into a private/local
+	 * list and without holding any locks.
+	 */
 	for (i = 0; i < num_of_events; i++) {
 		const char *path = paths[i] + data->watch_dir.len;
 		size_t len = strlen(path);
@@ -220,13 +222,13 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		 * If event[i] is marked as dropped, we assume that we have
 		 * lost sync with the filesystem and should flush our cached
 		 * data.  We need to:
-		 * [1] Discard the list of queue-items that we were locally
-		 *     building.
-		 * [2] Abort/wake any threads waiting for a cookie.
-		 * [3] Flush the cached data and create a new token.
+		 * [1] Abort/wake any client threads waiting for a cookie and
+		 *     flush the cached state data (the current token), and
+		 *     create a new token.
 		 *
-		 * We assume that any events that we received in this callback
-		 * (after event[i]) may still be valid.
+		 * [2] Discard the list of queue-items that we were locally
+		 *     building (since they are conceptually relative to the
+		 *     just flushed token).
 		 */
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
@@ -236,15 +238,21 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			trace2_data_string("fsmonitor", NULL,
 					   "fsm-listen/kernel", "dropped");
 
+			fsmonitor_force_resync(state);
+
 			fsmonitor_free_private_paths(queue_head);
 			queue_head = NULL;
 			queue_tail = NULL;
 
 			string_list_clear(&cookie_list, 0);
 
-			fsmonitor_force_resync(state);
-			seq_nr = fsmonitor_get_next_token_seq_nr(state);
-
+			/*
+			 * We assume that any events that we received
+			 * in this callback after this dropped event
+			 * may still be valid, so we continue rather
+			 * than break.  (And just in case there is a
+			 * delete of ".git" hiding in there.)
+			 */
 			continue;
 		}
 
@@ -281,14 +289,14 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		default:
 			/* try to queue normal pathnames */
 
-			// TODO ONLY-IF trace2 is enabled, should we call this.
-			log_flags_set(path, event_flags[i]);
+			if (trace_pass_fl(&trace_fsmonitor))
+				log_flags_set(path, event_flags[i]);
 
 			/* TODO: fsevent could be marked as both a file and directory */
 
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsFile) {
 				queue_head = fsmonitor_private_add_path(
-					queue_head, path, seq_nr++);
+					queue_head, path);
 				if (!queue_tail)
 					queue_tail = queue_head;
 				break;
@@ -297,7 +305,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
 				char *p = xstrfmt("%s/", path);
 				queue_head = fsmonitor_private_add_path(
-					queue_head, p, seq_nr++);
+					queue_head, p);
 				if (!queue_tail)
 					queue_tail = queue_head;
 				free(p);
@@ -308,26 +316,24 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		}
 	}
 
-	fsmonitor_publish_queue_paths(state, queue_head, queue_tail);
-	queue_head = NULL;
-	queue_tail = NULL;
+	fsmonitor_publish_queue_paths(state, queue_head, queue_tail, &cookie_list);
 
-	if (cookie_list.nr) {
-		fsmonitor_cookie_mark_seen(state, &cookie_list);
-		string_list_clear(&cookie_list, 0);
-	}
+	string_list_clear(&cookie_list, 0);
 
 	return;
 
 force_shutdown:
 	fsmonitor_free_private_paths(queue_head);
-	queue_head = NULL;
-	queue_tail = NULL;
 
 	data->shutdown_style = FORCE_SHUTDOWN;
 	CFRunLoopStop(data->rl);
 	return;
 }
+
+// TODO Investigate the proper value for the latency argument in the call
+// TODO to FSEventStreamCreate().
+// TODO
+// TODO https://developer.apple.com/documentation/coreservices/1443980-fseventstreamcreate
 
 int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 {
@@ -352,7 +358,7 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 	data->watch_path = CFStringCreateWithCString(NULL, data->watch_dir.buf, kCFStringEncodingUTF8);
 	data->paths_to_watch = CFArrayCreate(NULL, (const void **)&data->watch_path, 1, NULL);
 	data->stream = FSEventStreamCreate(NULL, fsevent_callback, &ctx, data->paths_to_watch,
-				     kFSEventStreamEventIdSinceNow, 0.1, flags);
+					   kFSEventStreamEventIdSinceNow, 0.1, flags);
 	if (data->stream == NULL)
 		goto failed;
 
@@ -401,11 +407,19 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	CFRunLoopStop(data->rl);
 }
 
+/*
+ * Behave as if the kernel sent our FSEventCallback a dropped event message.
+ * A proper simulation would try to inject an event into the listener thread's
+ * FSEventStream, but I'm not sure how to do that or that it matters, so just
+ * reset our data structures as we would in the callback.
+ *
+ * The difference is not that important now that the callback only touches
+ * shared data structures in `fsmonitor_publish_queue_paths()` and it can
+ * control the locking.
+ */
 void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
 {
-	// TODO implement this.
-	// TODO
-	// TODO need to inject state flag (under lock) and ...
+	fsmonitor_force_resync(state);
 }
 
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
@@ -414,8 +428,8 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 
 	data = state->backend_data;
 
-	// TODO cleanup trace2 and maybe use trace1
-	trace2_printf("Start watching: '%s' for fsevents", data->watch_dir.buf);
+	trace_printf_key(&trace_fsmonitor, "Watching: '%s' for fsevents",
+			 data->watch_dir.buf);
 
 	data->rl = CFRunLoopGetCurrent();
 

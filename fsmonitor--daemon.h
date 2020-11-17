@@ -71,17 +71,6 @@ struct fsmonitor_daemon_state {
 	struct ipc_server_data *ipc_server_data;
 };
 
-/*
- * Mark these cookies as _SEEN and wake up the corresponding client threads.
- */
-void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
-				const struct string_list *cookie_names);
-
-/*
- * Set _ABORT on all pending cookies and wake up all client threads.
- */
-void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state);
-
 enum fsmonitor_path_type {
 	IS_WORKTREE_PATH = 0,
 	IS_DOT_GIT,
@@ -105,33 +94,22 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
  * Returns the new head of the list.
  */
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	struct fsmonitor_queue_item *queue_head,
-	const char *path, uint64_t time);
+	struct fsmonitor_queue_item *queue_head, const char *path);
 
 void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head);
-
-uint64_t fsmonitor_get_next_token_seq_nr(
-	struct fsmonitor_daemon_state *state);
 
 /*
  * Link the given private item queue into the official
  * fsmonitor_daemon_state and thus make them visible to
  * worker threads.
+ *
+ * Wake up the client threads waiting on these cookies.
  */
 void fsmonitor_publish_queue_paths(
 	struct fsmonitor_daemon_state *state,
 	struct fsmonitor_queue_item *queue_head,
-	struct fsmonitor_queue_item *queue_tail);
-
-/*
- * Create a new token_data.  This creates a new unique ID, such as a
- * GUID or timestamp, that can be included in a FSMonitor protocol V2
- * message to let us know if the current client is talking to the
- * same instance of the daemon and that we have a contiguous range of
- * file system notification events.
- */
-struct fsmonitor_token_data *fsmonitor_new_token_data(void);
-void fsmonitor_free_token_data(struct fsmonitor_token_data *token);
+	struct fsmonitor_queue_item *queue_tail,
+	const struct string_list *cookie_names);
 
 /*
  * If the platform-specific layer loses sync with the filesystem,

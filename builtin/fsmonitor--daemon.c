@@ -87,7 +87,6 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	// TODO removed from the hashmap before this stack frame returns?
 
 	hashmap_add(&state->cookies, &cookie.entry);
-	pthread_mutex_unlock(&state->main_lock);
 
 	cookie_path = git_pathdup("%s", cookie.name);
 	fd = open(cookie_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -103,35 +102,36 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		// TODO Windows, maybe let the listener thread (which is
 		// TODO getting regular events) set a FCIR_TIMEOUT bit...
 
-		pthread_mutex_lock(&state->main_lock);
 		while (cookie.result == FCIR_INIT)
 			pthread_cond_wait(&state->cookies_cond,
 					  &state->main_lock);
 
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
-		pthread_mutex_unlock(&state->main_lock);
 	} else {
 		error_errno(_("could not create fsmonitor cookie '%s'"),
 			    cookie_path);
 
-		pthread_mutex_lock(&state->main_lock);
 		cookie.result = FCIR_ERROR;
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
-		pthread_mutex_unlock(&state->main_lock);
 	}
+
+	pthread_mutex_unlock(&state->main_lock);
 
 	free((char*)cookie.name);
 	free(cookie_path);
 	return cookie.result;
 }
 
-void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
-				const struct string_list *cookie_names)
+/*
+ * Mark these cookies as _SEEN and wake up the corresponding client threads.
+ */
+static void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
+				       const struct string_list *cookie_names)
 {
+	/* assert state->main_lock */
+
 	int k;
 	int nr_seen = 0;
-
-	pthread_mutex_lock(&state->main_lock);
 
 	for (k = 0; k < cookie_names->nr; k++) {
 		struct fsmonitor_cookie_item key;
@@ -149,17 +149,18 @@ void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
 
 	if (nr_seen)
 		pthread_cond_broadcast(&state->cookies_cond);
-
-	pthread_mutex_unlock(&state->main_lock);
 }
 
-void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
+/*
+ * Set _ABORT on all pending cookies and wake up all client threads.
+ */
+static void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
 {
+	/* assert state->main_lock */
+
 	struct hashmap_iter iter;
 	struct fsmonitor_cookie_item *cookie;
 	int nr_aborted = 0;
-
-	pthread_mutex_lock(&state->main_lock);
 
 	hashmap_for_each_entry(&state->cookies, &iter, cookie, entry) {
 		cookie->result = FCIR_ABORT;
@@ -168,8 +169,6 @@ void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
 	
 	if (nr_aborted)
 		pthread_cond_broadcast(&state->cookies_cond);
-
-	pthread_mutex_unlock(&state->main_lock);
 }
 
 /*
@@ -230,7 +229,7 @@ void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
  * Therefore, clients that present a token with a stale (non-current)
  * token_id will always be given a trivial response.
  */
-struct fsmonitor_token_data *fsmonitor_new_token_data(void)
+static struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 {
 	static int test_env_value = -1;
 	struct fsmonitor_token_data *token;
@@ -276,7 +275,7 @@ void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head)
 	}
 }
 
-void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
+static void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 {
 	if (!token)
 		return;
@@ -314,18 +313,19 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
 	struct fsmonitor_token_data *free_me = NULL;
 	struct fsmonitor_token_data *new_one = NULL;
 
-	fsmonitor_cookie_abort_all(state);
-
 	new_one = fsmonitor_new_token_data();
 
 	pthread_mutex_lock(&state->main_lock);
+
+	fsmonitor_cookie_abort_all(state);
+
 	if (state->current_token_data->client_ref_count == 0)
 		free_me = state->current_token_data;
 	state->current_token_data = new_one;
+
 	pthread_mutex_unlock(&state->main_lock);
 
-	if (free_me)
-		fsmonitor_free_token_data(free_me);
+	fsmonitor_free_token_data(free_me);
 }
 
 /*
@@ -425,16 +425,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		 *
 		 * Then send a trivial response using the new token.
 		 */
-		const struct fsmonitor_token_data *token_data;
-
-		pthread_mutex_lock(&state->main_lock);
-		token_data = state->current_token_data;
 		fsmonitor_listen__request_flush(state);
-		while (token_data == state->current_token_data)
-			pthread_cond_wait(&state->flush_cond,
-					  &state->main_lock);
-		pthread_mutex_unlock(&state->main_lock);
-
 		result = 0;
 		goto send_trivial_response;
 	}
@@ -706,68 +697,56 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 }
 
 struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	struct fsmonitor_queue_item *queue_head,
-	const char *path, uint64_t token_seq_nr)
+	struct fsmonitor_queue_item *queue_head, const char *path)
 {
 	struct fsmonitor_queue_item *item;
-
-	if (queue_head) {
-		/*
-		 * The queue/list is implicitly sorted (by construction)
-		 * from newest to oldest.
-		 */
-		assert(token_seq_nr > queue_head->token_seq_nr);
-	}
 
 	trace_printf_key(&trace_fsmonitor, "event: %s", path);
 
 	item = xmalloc(sizeof(*item));
 	item->interned_path = strintern(path);
-	item->token_seq_nr = token_seq_nr;
+	item->token_seq_nr = 0; /* defer until linked into published list */
 	item->next = queue_head;
 
 	return item;
 }
 
-uint64_t fsmonitor_get_next_token_seq_nr(
-	struct fsmonitor_daemon_state *state)
-{
-	uint64_t seq_nr = 0;
-
-	pthread_mutex_lock(&state->main_lock);
-	if (state->current_token_data->queue_head)
-		seq_nr = state->current_token_data->queue_head->token_seq_nr + 1;
-	pthread_mutex_unlock(&state->main_lock);
-
-	return seq_nr;
-}
-
 void fsmonitor_publish_queue_paths(
 	struct fsmonitor_daemon_state *state,
 	struct fsmonitor_queue_item *queue_head,
-	struct fsmonitor_queue_item *queue_tail)
+	struct fsmonitor_queue_item *queue_tail,
+	const struct string_list *cookie_names)
 {
-	if (!queue_head)
+	if (!queue_head && !cookie_names->nr)
 		return;
 
-	assert(queue_tail);
-
 	pthread_mutex_lock(&state->main_lock);
-	if (state->current_token_data->queue_head) {
-		/*
-		 * The queue/list is implicitly sorted (by construction)
-		 * from newest to oldest.  And the items in the given
-		 * fragment are newer than anything already in the queue.
-		 */
-		assert(queue_tail->token_seq_nr >
-		       state->current_token_data->queue_head->token_seq_nr);
+
+	if (queue_head) {
+		struct fsmonitor_queue_item *q;
+		uint64_t seq_nr, count;
+
+		queue_tail->token_seq_nr =
+			((state->current_token_data->queue_head) ?
+			 (state->current_token_data->queue_head->token_seq_nr + 1) :
+			 0);
+
+		for (count = 0, q = queue_head; q; count++, q = q->next)
+			;
+
+		seq_nr = queue_tail->token_seq_nr + count - 1;
+		for (q = queue_head; q != queue_tail; q = q->next)
+			q->token_seq_nr = seq_nr--;
+
+		queue_tail->next = state->current_token_data->queue_head;
+		state->current_token_data->queue_head = queue_head;
+
+		if (!state->current_token_data->queue_tail)
+			state->current_token_data->queue_tail = queue_tail;
 	}
 
-	queue_tail->next = state->current_token_data->queue_head;
-	state->current_token_data->queue_head = queue_head;
-
-	if (!state->current_token_data->queue_tail)
-		state->current_token_data->queue_tail = queue_tail;
+	if (cookie_names->nr)
+		fsmonitor_cookie_mark_seen(state, cookie_names);
 
 	pthread_mutex_unlock(&state->main_lock);
 }
@@ -775,11 +754,14 @@ void fsmonitor_publish_queue_paths(
 static void *fsmonitor_listen_thread_proc(void *_state)
 {
 	struct fsmonitor_daemon_state *state = _state;
+	struct fsmonitor_token_data *new_one = NULL;
 
 	trace2_thread_start("fsm-listen");
 
+	new_one = fsmonitor_new_token_data();
+
 	pthread_mutex_lock(&state->main_lock);
-	state->current_token_data = fsmonitor_new_token_data();
+	state->current_token_data = new_one;
 	pthread_mutex_unlock(&state->main_lock);
 
 	fsmonitor_listen__loop(state);

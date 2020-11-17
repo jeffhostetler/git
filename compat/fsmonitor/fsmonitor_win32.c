@@ -47,9 +47,30 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	SetEvent(state->backend_data->hListener[LISTENER_SHUTDOWN]);
 }
 
+/*
+ * Send the listener thead a message to act as if it received
+ * a kernel overflow on the handle.  Wait here for it to respond.
+ *
+ * TODO We could just call `fsmonitor_force_resync()` here on the
+ * TODO current thread if we don't care about that level of detail
+ * TODO (now that the __loop only has `fsmonitor_publish_queue_paths()`
+ * TODO is the only place where we touch the shared data structures).
+ */
 void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
 {
+	const struct fsmonitor_token_data *token_data;
+
+	pthread_mutex_lock(&state->main_lock);
+
+	token_data = state->current_token_data;
+
 	SetEvent(state->backend_data->hListener[LISTENER_FLUSH_REQUESTED]);
+
+	while (token_data == state->current_token_data)
+		pthread_cond_wait(&state->flush_cond,
+				  &state->main_lock);
+
+	pthread_mutex_unlock(&state->main_lock);
 }
 
 /*
@@ -175,12 +196,9 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct strbuf path = STRBUF_INIT;
 	char buffer[65536 * sizeof(wchar_t)], *p;
 	DWORD count = 0;
-	uint64_t seq_nr;
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 
 top:
-	seq_nr = fsmonitor_get_next_token_seq_nr(state);
-
 	for (;;) {
 		struct fsmonitor_queue_item *queue_head = NULL;
 		struct fsmonitor_queue_item *queue_tail = NULL;
@@ -260,8 +278,7 @@ top:
 			default:
 				/* queue normal pathname */
 				queue_head = fsmonitor_private_add_path(queue_head,
-									path.buf,
-									seq_nr++);
+									path.buf);
 				if (!queue_tail)
 					queue_tail = queue_head;
 				break;
@@ -272,14 +289,12 @@ top:
 			p += info->NextEntryOffset;
 		}
 
-		fsmonitor_publish_queue_paths(state, queue_head, queue_tail);
+		fsmonitor_publish_queue_paths(state, queue_head, queue_tail,
+					      &cookie_list);
+		string_list_clear(&cookie_list, 0);
+
 		queue_head = NULL;
 		queue_tail = NULL;
-
-		if (cookie_list.nr) {
-			fsmonitor_cookie_mark_seen(state, &cookie_list);
-			string_list_clear(&cookie_list, 0);
-		}
 	}
 
 force_error_stop:
