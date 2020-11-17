@@ -80,7 +80,10 @@ test_expect_success "setup for fsmonitor" '
 	git config core.fsmonitor "$INTEGRATION_SCRIPT" &&
 
 	# This implicitly starts the fsmonitor daemon.
-	git update-index --fsmonitor
+	git update-index --fsmonitor &&
+
+	# Confirm that the internal fsmonitor daemon is alive.
+	git fsmonitor--daemon --query-index | grep ":internal:"
 '
 
 if test -n "$GIT_PERF_7527_DROP_CACHE"; then
@@ -88,6 +91,10 @@ if test -n "$GIT_PERF_7527_DROP_CACHE"; then
 fi
 
 test_perf "status (fsmonitor=$INTEGRATION_SCRIPT)" '
+	git status
+'
+
+test_perf "status (fsmonitor=$INTEGRATION_SCRIPT) repeat" '
 	git status
 '
 
@@ -138,6 +145,6 @@ test_perf "status -uall (fsmonitor=$INTEGRATION_SCRIPT)" '
 	git status -uall
 '
 
-git fsmonitor--daemon --stop
+git fsmonitor--daemon --stop >/dev/null 2>&1
 
 test_done
