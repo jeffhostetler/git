@@ -317,13 +317,12 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	}
 
 	fsmonitor_publish_queue_paths(state, queue_head, queue_tail, &cookie_list);
-
 	string_list_clear(&cookie_list, 0);
-
 	return;
 
 force_shutdown:
 	fsmonitor_free_private_paths(queue_head);
+	string_list_clear(&cookie_list, 0);
 
 	data->shutdown_style = FORCE_SHUTDOWN;
 	CFRunLoopStop(data->rl);

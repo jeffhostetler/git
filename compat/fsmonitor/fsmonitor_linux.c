@@ -238,6 +238,17 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	close(data->fd_send_shutdown);
 }
 
+/*
+ * Behave as if the kernel dropped some events and resync.
+ * A proper simulation could inject an event into the listener thread's
+ * poll[] and have it handle it, but I'm not sure that we need to be that
+ * precise.  The main idea is to setup a new token-data.
+ */
+void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
+{
+	fsmonitor_force_resync(state);
+}
+
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 	uint32_t deleted = IN_DELETE | IN_DELETE_SELF | IN_MOVED_FROM;
@@ -246,15 +257,18 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct strbuf buf = STRBUF_INIT;
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
 	struct pollfd pollfd[2];
+	struct fsmonitor_queue_item *queue_head;
+	struct fsmonitor_queue_item *queue_tail;
+	struct string_list cookie_list = STRING_LIST_INIT_DUP;
+	char b[sizeof(struct inotify_event) + NAME_MAX + 1], *p;
 	int ret;
 
-	trace2_printf("Start watching: '%s' for inotify", get_git_work_tree());
+	trace_printf_key(&trace_fsmonitor, "Watching: '%s' for inotify",
+			 get_git_work_tree());
 
 	for (;;) {
-		struct fsmonitor_queue_item dummy, *queue = &dummy;
-		uint64_t time = getnanotime();
-		char b[sizeof(struct inotify_event) + NAME_MAX + 1], *p;
-		int i;
+		queue_head = NULL;
+		queue_tail = NULL;
 
 		pollfd[0].fd = data->fd_wait_shutdown;
 		pollfd[0].events = POLLIN;
@@ -281,12 +295,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			error_errno(_("could not read() inotify fd"));
 			goto force_error_stop;
 		}
-
-		/* Ensure strictly increasing timestamps */
-		pthread_mutex_lock(&state->queue_update_lock);
-		if (time <= state->latest_update)
-			time = state->latest_update + 1;
-		pthread_mutex_unlock(&state->queue_update_lock);
 
 		for (p = b; ret > 0; ) {
 			const struct inotify_event *e = (void *)p;
@@ -324,7 +332,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			switch (fsmonitor_classify_path(buf.buf, buf.len)) {
 			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 				/* special case cookie files within .git/ */
-				string_list_append(&state->cookie_list, buf.buf + 5);
+				string_list_append(&cookie_list, buf.buf + 5);
 				break;
 
 			case IS_INSIDE_DOT_GIT:
@@ -334,9 +342,9 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			case IS_DOT_GIT:
 				/* .git directory deleted (or renamed away) */
 				if (e->mask & deleted) {
-					trace2_data_string(
-						"fsmonitor", NULL, "message",
-						".git directory was removed; quitting");
+					trace2_data_string("fsmonitor", NULL,
+							   "fsm-listen/dotgit",
+							   "removed");
 					goto force_shutdown;
 				}
 				break;
@@ -344,37 +352,28 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			case IS_WORKTREE_PATH:
 			default:
 				/* try to queue normal pathnames */
-				if (fsmonitor_queue_path(&queue, buf.buf,
-							 buf.len, time) < 0) {
-					error("could not queue '%s'; exiting", buf.buf);
-					goto force_error_stop;
-				}
+
+				queue_head = fsmonitor_private_add_path(
+					queue_head, buf.buf);
+				if (!queue_tail)
+					queue_tail = queue_head;
 				break;
 			}
 		}
 
-		/* Only update the queue if it changed */
-		if (queue != &dummy) {
-			pthread_mutex_lock(&state->queue_update_lock);
-			if (state->first)
-				state->first->previous = dummy.previous;
-			dummy.previous->next = state->first;
-			state->first = queue;
-			state->latest_update = time;
-			pthread_mutex_unlock(&state->queue_update_lock);
-		}
-
-		for (i = 0; i < state->cookie_list.nr; i++) {
-			fsmonitor_cookie_seen_trigger(state, state->cookie_list.items[i].string);
-		}
-
-		string_list_clear(&state->cookie_list, 0);
+		fsmonitor_publish_queue_paths(state, queue_head, queue_tail,
+					      &cookie_list);
+		queue_head = NULL;
+		queue_tail = NULL;
+		string_list_clear(&cookie_list, 0);
 	}
 
 force_error_stop:
 	state->error_code = -1;
 
 force_shutdown:
+	fsmonitor_free_private_paths(queue_head);
+	string_list_clear(&cookie_list, 0);
 	/*
 	 * Tell the IPC thead pool to stop (which completes the await
 	 * in the main thread (which will also signal this thread (if
