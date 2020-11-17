@@ -458,8 +458,8 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	}
 	if (!state->current_token_data) {
 		/*
-		 * We don't have a token.  This means that the listener
-		 * thread has not yet started.
+		 * We don't have a current token.  This may mean that
+		 * the listener thread has not yet started.
 		 */
 		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
@@ -485,7 +485,10 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		 */
 		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
-		goto send_trivial_response;
+		if (requested_oldest_seq_nr)
+			goto send_trivial_response;
+		else
+			goto send_empty_response;
 	}
 	if (requested_oldest_seq_nr <
 	    state->current_token_data->queue_tail->token_seq_nr) {
@@ -650,6 +653,23 @@ send_trivial_response:
 	strbuf_release(&requested_token_id);
 
 	return result;
+
+send_empty_response:
+	pthread_mutex_lock(&state->main_lock);
+	fsmonitor_format_response_token(&response_token,
+					&state->current_token_data->token_id,
+					NULL);
+	pthread_mutex_unlock(&state->main_lock);
+
+	reply(reply_data, response_token.buf, response_token.len + 1);
+	trace2_data_string("fsmonitor", the_repository, "serve.token",
+			   response_token.buf);
+	trace2_data_intmax("fsmonitor", the_repository, "serve.empty", 1);
+
+	strbuf_release(&response_token);
+	strbuf_release(&requested_token_id);
+
+	return 0;
 }
 
 static ipc_server_application_cb handle_client;
