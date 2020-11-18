@@ -481,14 +481,15 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	if (!state->current_token_data->queue_tail) {
 		/*
 		 * The listener has not received any filesystem
-		 * events yet.
+		 * events yet since we created the current token.
+		 * We can respond with an empty list, since the
+		 * client has already seen the current token and
+		 * we have nothing new to report.  (This is
+		 * instead of sending a trivial response.)
 		 */
 		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
-		if (requested_oldest_seq_nr)
-			goto send_trivial_response;
-		else
-			goto send_empty_response;
+		goto send_empty_response;
 	}
 	if (requested_oldest_seq_nr <
 	    state->current_token_data->queue_tail->token_seq_nr) {
@@ -1147,3 +1148,14 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 // TODO   [] So perhaps after the index is updated and a generous
 // TODO      grace period (for slow commands), we can truncate the
 // TODO      current queue list.
+
+//////////////////////////////////////////////////////////////////
+// TODO queue-items can be simplified further since they now just
+// TODO contain a 'const char *' to an interned string and a seq_nr.
+// TODO we could just create an array[] for the const char *
+// TODO values and grow inside each of the platform callbacks and
+// TODO build a chain of the arrays (and put the seq_nr on the chunks).
+// TODO This would avoid having a linked list of 1 item per modified
+// TODO file per modification.
+// TODO
+// TODO This might also make truncating the list easier.
