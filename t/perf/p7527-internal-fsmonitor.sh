@@ -83,7 +83,7 @@ test_expect_success "setup for fsmonitor" '
 	git update-index --fsmonitor &&
 
 	# Confirm that the internal fsmonitor daemon is alive.
-	git fsmonitor--daemon --query-index | grep ":internal:"
+	git fsmonitor--daemon --query-index | nul_to_q | grep ":internal:"
 '
 
 if test -n "$GIT_PERF_7527_DROP_CACHE"; then
