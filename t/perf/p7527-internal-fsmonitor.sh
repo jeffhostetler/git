@@ -75,6 +75,10 @@ test_expect_success "setup for fsmonitor" '
 		git config core.splitIndex "$GIT_PERF_7527_SPLIT_INDEX"
 	fi &&
 
+	# Backup the initial index so that we can start both the with and
+	# without fsmonitor tests from the same starting point.
+	cp .git/index .git/index.base &&
+
 	INTEGRATION_SCRIPT=":internal:" &&
 
 	git config core.fsmonitor "$INTEGRATION_SCRIPT" &&
@@ -83,7 +87,7 @@ test_expect_success "setup for fsmonitor" '
 	git update-index --fsmonitor &&
 
 	# Confirm that the internal fsmonitor daemon is alive.
-	git fsmonitor--daemon --query-index | nul_to_q | grep ":internal:"
+	git fsmonitor--daemon --query-index | nul_to_q | grep -q ":internal:"
 '
 
 if test -n "$GIT_PERF_7527_DROP_CACHE"; then
@@ -118,6 +122,7 @@ test_expect_success "setup without fsmonitor" '
 	git fsmonitor--daemon --stop &&
 	unset INTEGRATION_SCRIPT &&
 	git config --unset core.fsmonitor &&
+	cp .git/index.base .git/index &&
 	git update-index --no-fsmonitor
 '
 
@@ -126,6 +131,10 @@ if test -n "$GIT_PERF_7527_DROP_CACHE"; then
 fi
 
 test_perf "status (fsmonitor=$INTEGRATION_SCRIPT)" '
+	git status
+'
+
+test_perf "status (fsmonitor=$INTEGRATION_SCRIPT) repeat" '
 	git status
 '
 
