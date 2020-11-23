@@ -257,8 +257,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	struct strbuf buf = STRBUF_INIT;
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
 	struct pollfd pollfd[2];
-	struct fsmonitor_queue_item *queue_head;
-	struct fsmonitor_queue_item *queue_tail;
+	struct fsmonitor_batch *batch = NULL;
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 	char b[sizeof(struct inotify_event) + NAME_MAX + 1], *p;
 	int ret;
@@ -267,8 +266,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			 get_git_work_tree());
 
 	for (;;) {
-		queue_head = NULL;
-		queue_tail = NULL;
+		batch = NULL;
 
 		pollfd[0].fd = data->fd_wait_shutdown;
 		pollfd[0].events = POLLIN;
@@ -353,18 +351,14 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 			default:
 				/* try to queue normal pathnames */
 
-				queue_head = fsmonitor_private_add_path(
-					queue_head, buf.buf);
-				if (!queue_tail)
-					queue_tail = queue_head;
+				if (!batch)
+					batch = fsmonitor_batch__new();
+				fsmonitor_batch__add_path(batch, buf.buf);
 				break;
 			}
 		}
 
-		fsmonitor_publish_queue_paths(state, queue_head, queue_tail,
-					      &cookie_list);
-		queue_head = NULL;
-		queue_tail = NULL;
+		fsmonitor_publish(state, batch, &cookie_list);
 		string_list_clear(&cookie_list, 0);
 	}
 
@@ -372,7 +366,8 @@ force_error_stop:
 	state->error_code = -1;
 
 force_shutdown:
-	fsmonitor_free_private_paths(queue_head);
+	if (fsmonitor_batch__free(batch))
+		BUG("batch should not have a next");
 	string_list_clear(&cookie_list, 0);
 	/*
 	 * Tell the IPC thead pool to stop (which completes the await
