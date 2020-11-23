@@ -200,8 +200,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	struct fsmonitor_daemon_state *state = ctx;
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
 	char **paths = (char **)event_paths;
-	struct fsmonitor_queue_item *queue_head = NULL;
-	struct fsmonitor_queue_item *queue_tail = NULL;
+	struct fsmonitor_batch *batch = NULL;
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 	int i;
 
@@ -226,9 +225,9 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		 *     flush the cached state data (the current token), and
 		 *     create a new token.
 		 *
-		 * [2] Discard the list of queue-items that we were locally
-		 *     building (since they are conceptually relative to the
-		 *     just flushed token).
+		 * [2] Discard the batch that we were locally building (since
+		 *     they are conceptually relative to the just flushed
+		 *     token).
 		 */
 		if ((event_flags[i] & kFSEventStreamEventFlagKernelDropped) ||
 		    (event_flags[i] & kFSEventStreamEventFlagUserDropped)) {
@@ -240,10 +239,8 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 
 			fsmonitor_force_resync(state);
 
-			fsmonitor_free_private_paths(queue_head);
-			queue_head = NULL;
-			queue_tail = NULL;
-
+			if (fsmonitor_batch__free(batch))
+				BUG("batch should not have a next");
 			string_list_clear(&cookie_list, 0);
 
 			/*
@@ -295,19 +292,19 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			/* TODO: fsevent could be marked as both a file and directory */
 
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsFile) {
-				queue_head = fsmonitor_private_add_path(
-					queue_head, path);
-				if (!queue_tail)
-					queue_tail = queue_head;
+				if (!batch)
+					batch = fsmonitor_batch__new();
+				fsmonitor_batch__add_path(batch, path);
 				break;
 			}
 
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
 				char *p = xstrfmt("%s/", path);
-				queue_head = fsmonitor_private_add_path(
-					queue_head, p);
-				if (!queue_tail)
-					queue_tail = queue_head;
+
+				if (!batch)
+					batch = fsmonitor_batch__new();
+				fsmonitor_batch__add_path(batch, p);
+
 				free(p);
 				break;
 			}
@@ -316,12 +313,13 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 		}
 	}
 
-	fsmonitor_publish_queue_paths(state, queue_head, queue_tail, &cookie_list);
+	fsmonitor_publish(state, batch, &cookie_list);
 	string_list_clear(&cookie_list, 0);
 	return;
 
 force_shutdown:
-	fsmonitor_free_private_paths(queue_head);
+	if (fsmonitor_batch__free(batch))
+		BUG("batch should not have a next");
 	string_list_clear(&cookie_list, 0);
 
 	data->shutdown_style = FORCE_SHUTDOWN;
@@ -413,7 +411,7 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
  * reset our data structures as we would in the callback.
  *
  * The difference is not that important now that the callback only touches
- * shared data structures in `fsmonitor_publish_queue_paths()` and it can
+ * shared data structures in `fsmonitor_publish()` and it can
  * control the locking.
  */
 void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)

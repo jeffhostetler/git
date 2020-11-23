@@ -775,8 +775,8 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 		batch->next = head;
 
 		trace_printf_key(&trace_fsmonitor,
-				 "batch %"PRIu64" contains %"PRIu64" paths",
-				 batch->batch_seq_nr, batch->nr);
+				 "batch %"PRIu64" contains %d paths",
+				 batch->batch_seq_nr, (int)batch->nr);
 
 		state->current_token_data->batch_head = batch;
 
