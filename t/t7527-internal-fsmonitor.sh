@@ -386,19 +386,21 @@ test_expect_success 'flush cached data' '
 	# again appears in the cache.  It should have the new <token_id>.
 
 	git -C test_flush fsmonitor--daemon --flush >flush_0 &&
+	nul_to_q <flush_0 >flush_q0 &&
+	grep "^:internal:test_00000002:0Q/Q$" flush_q0 &&
 
 	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_2 &&
 	nul_to_q <actual_2 >actual_q2 &&
 
-	grep -v "file_1" actual_q2 &&
+	grep "^:internal:test_00000002:0Q$" actual_q2 &&
 
-	touch test_flush/file_1 &&
+	touch test_flush/file_3 &&
 	sleep 1 &&
 
 	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_3 &&
 	nul_to_q <actual_3 >actual_q3 &&
 
-	grep "file_1" actual_q3
+	grep "file_3" actual_q3
 '
 
 test_done
