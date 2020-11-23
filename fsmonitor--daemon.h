@@ -23,16 +23,33 @@ int fsmonitor_spawn_daemon(void);
 
 /* Internal fsmonitor */
 
-struct fsmonitor_queue_item {
-	struct fsmonitor_queue_item *next;
-	const char *interned_path; /* see strintern() */
-	uint64_t token_seq_nr;
-};
+struct fsmonitor_batch;
+
+/*
+ * Create a new batch of path(s).  The returned batch is considered
+ * private and not linked into the fsmonitor daemon state.  The caller
+ * should fill this batch with one or more paths and then publish it.
+ */
+struct fsmonitor_batch *fsmonitor_batch__new(void);
+
+/*
+ * Free this batch and return the value of the batch->next field.
+ */
+struct fsmonitor_batch *fsmonitor_batch__free(struct fsmonitor_batch *batch);
+
+/*
+ * Add this path to this batch of modified files.
+ *
+ * The batch should be private and NOT (yet) linked into the fsmonitor
+ * daemon state and therefore not yet visible to worker threads and so
+ * no locking is required.
+ */
+void fsmonitor_batch__add_path(struct fsmonitor_batch *batch, const char *path);
 
 struct fsmonitor_token_data {
 	struct strbuf token_id;
-	struct fsmonitor_queue_item *queue_head;
-	struct fsmonitor_queue_item *queue_tail;
+	struct fsmonitor_batch *batch_head;
+	struct fsmonitor_batch *batch_tail;
 	uint64_t client_ref_count;
 };
 
@@ -84,32 +101,16 @@ enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 #define FSMONITOR_DAEMON_FLUSH -3
 
 /*
- * Register a path as having been touched at a certain time.
+ * Prepend the this batch of path(s) onto the list of batches associated
+ * with the current token.  This makes the batch visible to worker threads.
  *
- * Create a new item for the given (path, time) and prepend it
- * to the given queue.  This is a private list of items and NOT
- * (yet) linked into the fsmonitor_daemon_state (and therefore
- * not yet visible to worker threads), so no locking is required.
- *
- * Returns the new head of the list.
- */
-struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	struct fsmonitor_queue_item *queue_head, const char *path);
-
-void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head);
-
-/*
- * Link the given private item queue into the official
- * fsmonitor_daemon_state and thus make them visible to
- * worker threads.
+ * The caller no longer owns the batch and must not free it.
  *
  * Wake up the client threads waiting on these cookies.
  */
-void fsmonitor_publish_queue_paths(
-	struct fsmonitor_daemon_state *state,
-	struct fsmonitor_queue_item *queue_head,
-	struct fsmonitor_queue_item *queue_tail,
-	const struct string_list *cookie_names);
+void fsmonitor_publish(struct fsmonitor_daemon_state *state,
+		       struct fsmonitor_batch *batch,
+		       const struct string_list *cookie_names);
 
 /*
  * If the platform-specific layer loses sync with the filesystem,

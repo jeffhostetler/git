@@ -237,8 +237,8 @@ static struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 	token = (struct fsmonitor_token_data *)xcalloc(1, sizeof(*token));
 
 	strbuf_init(&token->token_id, 0);
-	token->queue_head = NULL;
-	token->queue_tail = NULL;
+	token->batch_head = NULL;
+	token->batch_tail = NULL;
 	token->client_ref_count = 0;
 
 	if (test_env_value < 0)
@@ -266,17 +266,53 @@ static struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 	return token;
 }
 
-void fsmonitor_free_private_paths(struct fsmonitor_queue_item *queue_head)
+struct fsmonitor_batch {
+	struct fsmonitor_batch *next;
+	uint64_t batch_seq_nr;
+	const char **interned_paths;
+	size_t nr, alloc;
+};
+
+struct fsmonitor_batch *fsmonitor_batch__new(void)
 {
-	while (queue_head) {
-		struct fsmonitor_queue_item *next = queue_head->next;
-		free(queue_head);
-		queue_head = next;
-	}
+	struct fsmonitor_batch *batch = xcalloc(1, sizeof(*batch));
+
+	return batch;
+}
+
+struct fsmonitor_batch *fsmonitor_batch__free(struct fsmonitor_batch *batch)
+{
+	struct fsmonitor_batch *next;
+
+	if (!batch)
+		return NULL;
+
+	next = batch->next;
+
+	/*
+	 * The actual strings within the array are interned, so we don't
+	 * need to free them.
+	 */
+	free(batch->interned_paths);
+
+	return next;
+}
+
+void fsmonitor_batch__add_path(struct fsmonitor_batch *batch,
+			       const char *path)
+{
+	const char *interned_path = strintern(path);
+
+	trace_printf_key(&trace_fsmonitor, "event: %s", interned_path);
+
+	ALLOC_GROW(batch->interned_paths, batch->nr + 1, batch->alloc);
+	batch->interned_paths[batch->nr++] = interned_path;
 }
 
 static void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 {
+	struct fsmonitor_batch *p;
+
 	if (!token)
 		return;
 
@@ -284,9 +320,8 @@ static void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
 
 	strbuf_release(&token->token_id);
 
-	fsmonitor_free_private_paths(token->queue_head);
-	token->queue_head = NULL;
-	token->queue_tail = NULL;
+	for (p = token->batch_head; p; p = fsmonitor_batch__free(p))
+		;
 
 	free(token);
 }
@@ -334,9 +369,9 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
 static void fsmonitor_format_response_token(
 	struct strbuf *response_token,
 	const struct strbuf *response_token_id,
-	const struct fsmonitor_queue_item *queue_item)
+	const struct fsmonitor_batch *batch)
 {
-	uint64_t seq_nr = (queue_item) ? queue_item->token_seq_nr + 1: 0;
+	uint64_t seq_nr = (batch) ? batch->batch_seq_nr + 1 : 0;
 
 	strbuf_reset(response_token);
 	strbuf_addf(response_token, ":internal:%s:%"PRIu64,
@@ -383,7 +418,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	struct strbuf requested_token_id = STRBUF_INIT;
 	uint64_t requested_oldest_seq_nr = 0;
 	const char *p;
-	const struct fsmonitor_queue_item *queue;
+	const struct fsmonitor_batch *batch;
 	intmax_t count = 0, duplicates = 0;
 	kh_str_t *shown;
 	int hash_ret;
@@ -478,7 +513,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 				   "serve.token", "different");
 		goto send_trivial_response;
 	}
-	if (!state->current_token_data->queue_tail) {
+	if (!state->current_token_data->batch_tail) {
 		/*
 		 * The listener has not received any filesystem
 		 * events yet since we created the current token.
@@ -492,7 +527,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		goto send_empty_response;
 	}
 	if (requested_oldest_seq_nr <
-	    state->current_token_data->queue_tail->token_seq_nr) {
+	    state->current_token_data->batch_tail->batch_seq_nr) {
 		/*
 		 * The client wants older events that we have for
 		 * this token_id.  This probably means that we have
@@ -500,7 +535,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		 */
 		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
 		      requested_oldest_seq_nr,
-		      state->current_token_data->queue_tail->token_seq_nr);
+		      state->current_token_data->batch_tail->batch_seq_nr);
 		pthread_mutex_unlock(&state->main_lock);
 		result = 0;
 		goto send_trivial_response;
@@ -541,12 +576,12 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	/*
 	 * We're going to hold onto a pointer to the current
-	 * token-data while we walk the contents of the queue.
+	 * token-data while we walk the list of files.
 	 * During this time, we will NOT be under the lock.
 	 * So we ref-count it.
 	 *
 	 * This allows the listener thread to continue prepending
-	 * new queue-items to the token-data (which we'll ignore).
+	 * new batches of items to the token-data (which we'll ignore).
 	 *
 	 * AND it allows the listener thread to do a token-reset
 	 * (and install a new `current_token_data`).
@@ -554,16 +589,16 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
 
-	queue = token_data->queue_head;
+	batch = token_data->batch_head;
 
 	/*
 	 * FSMonitor Protocol V2 requires that we send a response header
-	 * with a "current token" and then all of the paths that changed
+	 * with a "new current token" and then all of the paths that changed
 	 * since the "requested token".
 	 *
 	 * TODO Note that this design is somewhat broken.  The listener
-	 * TODO listener thread is continuously updating the queue of
-	 * TODO items (prepending them to the list), so by the time we
+	 * TODO thread is continuously updating the list of modified paths
+	 * TODO (prepending new batches to the list), so by the time we
 	 * TODO send the current list to the client, there may be more
 	 * TODO items present.  Granted, the request "everything since t0"
 	 * TODO is a bit arbitrary for a filesystem in motion.  Do we want
@@ -574,7 +609,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	 */
 	fsmonitor_format_response_token(&response_token,
 					&token_data->token_id,
-					token_data->queue_head);
+					token_data->batch_head);
 
 	pthread_mutex_unlock(&state->main_lock);
 
@@ -585,30 +620,36 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	trace_printf_key(&trace_fsmonitor, "requested token: %s", command);
 
 	shown = kh_init_str();
-	while (queue && queue->token_seq_nr >= requested_oldest_seq_nr) {
-		if (kh_get_str(shown, queue->interned_path) != kh_end(shown))
-			duplicates++;
-		else {
-			kh_put_str(shown, queue->interned_path, &hash_ret);
+	while (batch && batch->batch_seq_nr >= requested_oldest_seq_nr) {
+		size_t k;
 
-			// TODO This loop is writing 1 pathname at a time.
-			// TODO This causes a pkt-line write per file.
-			// TODO This will cause a context switch as the client
-			// TODO will try to do a pkt-line read.
-			// TODO We should consider sending a batch in a
-			// TODO large buffer.
+		for (k = 0; k < batch->nr; k++) {
+			const char *s = batch->interned_paths[k];
 
-			/* write the path, followed by a NUL */
-			if (reply(reply_data,
-				  queue->interned_path, strlen(queue->interned_path) + 1) < 0)
-				break;
+			if (kh_get_str(shown, s) != kh_end(shown))
+				duplicates++;
+			else {
+				kh_put_str(shown, s, &hash_ret);
 
-			trace_printf_key(&trace_fsmonitor, "send[%"PRIuMAX"]: %s",
-					 count, queue->interned_path);
+				// TODO This loop is writing 1 pathname at a time.
+				// TODO This causes a pkt-line write per file.
+				// TODO This will cause a context switch as the client
+				// TODO will try to do a pkt-line read.
+				// TODO We should consider sending a batch in a
+				// TODO large buffer.
 
-			count++;
+				/* write the path, followed by a NUL */
+				if (reply(reply_data, s, strlen(s) + 1) < 0)
+					break;
+
+				trace_printf_key(&trace_fsmonitor,
+						 "send[%"PRIuMAX"]: %s",
+						 count, s);
+
+				count++;
+			}
 		}
-		queue = queue->next;
+		batch = batch->next;
 	}
 
 	kh_release_str(shown);
@@ -641,7 +682,7 @@ send_trivial_response:
 	pthread_mutex_lock(&state->main_lock);
 	fsmonitor_format_response_token(&response_token,
 					&state->current_token_data->token_id,
-					state->current_token_data->queue_head);
+					state->current_token_data->batch_head);
 	pthread_mutex_unlock(&state->main_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
@@ -717,53 +758,30 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->name, keydata ? keydata : b->name);
 }
 
-struct fsmonitor_queue_item *fsmonitor_private_add_path(
-	struct fsmonitor_queue_item *queue_head, const char *path)
+void fsmonitor_publish(struct fsmonitor_daemon_state *state,
+		       struct fsmonitor_batch *batch,
+		       const struct string_list *cookie_names)
 {
-	struct fsmonitor_queue_item *item;
-
-	trace_printf_key(&trace_fsmonitor, "event: %s", path);
-
-	item = xmalloc(sizeof(*item));
-	item->interned_path = strintern(path);
-	item->token_seq_nr = 0; /* defer until linked into published list */
-	item->next = queue_head;
-
-	return item;
-}
-
-void fsmonitor_publish_queue_paths(
-	struct fsmonitor_daemon_state *state,
-	struct fsmonitor_queue_item *queue_head,
-	struct fsmonitor_queue_item *queue_tail,
-	const struct string_list *cookie_names)
-{
-	if (!queue_head && !cookie_names->nr)
+	if (!batch && !cookie_names->nr)
 		return;
 
 	pthread_mutex_lock(&state->main_lock);
 
-	if (queue_head) {
-		struct fsmonitor_queue_item *q;
-		uint64_t seq_nr, count;
+	if (batch) {
+		struct fsmonitor_batch *head =
+			state->current_token_data->batch_head;
 
-		queue_tail->token_seq_nr =
-			((state->current_token_data->queue_head) ?
-			 (state->current_token_data->queue_head->token_seq_nr + 1) :
-			 0);
+		batch->batch_seq_nr = ((head) ? head->batch_seq_nr + 1 : 0);
+		batch->next = head;
 
-		for (count = 0, q = queue_head; q; count++, q = q->next)
-			;
+		trace_printf_key(&trace_fsmonitor,
+				 "batch %"PRIu64" contains %"PRIu64" paths",
+				 batch->batch_seq_nr, batch->nr);
 
-		seq_nr = queue_tail->token_seq_nr + count - 1;
-		for (q = queue_head; q != queue_tail; q = q->next)
-			q->token_seq_nr = seq_nr--;
+		state->current_token_data->batch_head = batch;
 
-		queue_tail->next = state->current_token_data->queue_head;
-		state->current_token_data->queue_head = queue_head;
-
-		if (!state->current_token_data->queue_tail)
-			state->current_token_data->queue_tail = queue_tail;
+		if (!state->current_token_data->batch_tail)
+			state->current_token_data->batch_tail = batch;
 	}
 
 	if (cookie_names->nr)
@@ -1140,22 +1158,11 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 // TODO   [] Consider worktree feature
 // TODO   [] Cookie files are broken
 //
-// TODO Need to trim ancient items from queue list.
+// TODO Need to trim ancient items from batch list.
 // TODO   [] When the .git/index is updated, future commands will
 // TODO      be relative to the token contained within it.  So we
 // TODO      don't need to hang onto ancient events that would only
 // TODO      be referenced by an older version of the index.
 // TODO   [] So perhaps after the index is updated and a generous
 // TODO      grace period (for slow commands), we can truncate the
-// TODO      current queue list.
-
-//////////////////////////////////////////////////////////////////
-// TODO queue-items can be simplified further since they now just
-// TODO contain a 'const char *' to an interned string and a seq_nr.
-// TODO we could just create an array[] for the const char *
-// TODO values and grow inside each of the platform callbacks and
-// TODO build a chain of the arrays (and put the seq_nr on the chunks).
-// TODO This would avoid having a linked list of 1 item per modified
-// TODO file per modification.
-// TODO
-// TODO This might also make truncating the list easier.
+// TODO      current batch list.

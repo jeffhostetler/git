@@ -53,8 +53,8 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
  *
  * TODO We could just call `fsmonitor_force_resync()` here on the
  * TODO current thread if we don't care about that level of detail
- * TODO (now that the __loop only has `fsmonitor_publish_queue_paths()`
- * TODO is the only place where we touch the shared data structures).
+ * TODO (now that the __loop only touches shared data structures
+ * TODO in the `fsmonitor_publish() at the bottom of the loop).
  */
 void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
 {
@@ -200,8 +200,7 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 
 top:
 	for (;;) {
-		struct fsmonitor_queue_item *queue_head = NULL;
-		struct fsmonitor_queue_item *queue_tail = NULL;
+		struct fsmonitor_batch *batch = NULL;
 
 		switch (read_directory_changes_overlapped(state,
 							  buffer, sizeof(buffer),
@@ -266,10 +265,8 @@ top:
 							   "fsm-listen/dotgit",
 							   "removed");
 
-					fsmonitor_free_private_paths(queue_head);
-					queue_head = NULL;
-					queue_tail = NULL;
-
+					if (fsmonitor_batch__free(batch))
+						BUG("batch should not have a next");
 					goto force_shutdown;
 				}
 				break;
@@ -277,10 +274,9 @@ top:
 			case IS_WORKTREE_PATH:
 			default:
 				/* queue normal pathname */
-				queue_head = fsmonitor_private_add_path(queue_head,
-									path.buf);
-				if (!queue_tail)
-					queue_tail = queue_head;
+				if (!batch)
+					batch = fsmonitor_batch__new();
+				fsmonitor_batch__add_path(batch, path.buf);
 				break;
 			}
 
@@ -289,12 +285,8 @@ top:
 			p += info->NextEntryOffset;
 		}
 
-		fsmonitor_publish_queue_paths(state, queue_head, queue_tail,
-					      &cookie_list);
+		fsmonitor_publish(state, batch, &cookie_list);
 		string_list_clear(&cookie_list, 0);
-
-		queue_head = NULL;
-		queue_tail = NULL;
 	}
 
 force_error_stop:
