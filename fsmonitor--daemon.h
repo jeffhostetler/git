@@ -71,7 +71,7 @@ struct fsmonitor_cookie_item {
 struct fsmonitor_daemon_backend_data; /* opaque platform-specific data */
 
 struct fsmonitor_daemon_state {
-	pthread_t watcher_thread;
+	pthread_t listener_thread;
 	pthread_mutex_t main_lock;
 
 	struct fsmonitor_token_data *current_token_data;

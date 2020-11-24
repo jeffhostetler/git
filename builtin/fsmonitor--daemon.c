@@ -856,7 +856,7 @@ static int fsmonitor_run_daemon(void)
 	 * Start the fsmonitor listener thread to collect filesystem
 	 * events.
 	 */
-	if (pthread_create(&state.watcher_thread, NULL,
+	if (pthread_create(&state.listener_thread, NULL,
 			   fsmonitor_listen_thread_proc, &state) < 0) {
 		ipc_server_stop_async(state.ipc_server_data);
 		ipc_server_await(state.ipc_server_data);
@@ -883,7 +883,7 @@ static int fsmonitor_run_daemon(void)
 	 * it again.  And wait for it to shutdown.
 	 */
 	fsmonitor_listen__stop_async(&state);
-	pthread_join(state.watcher_thread, NULL);
+	pthread_join(state.listener_thread, NULL);
 
 	ipc_server_free(state.ipc_server_data);
 
