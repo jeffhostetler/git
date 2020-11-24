@@ -418,6 +418,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	struct strbuf requested_token_id = STRBUF_INIT;
 	uint64_t requested_oldest_seq_nr = 0;
 	const char *p;
+	const struct fsmonitor_batch *batch_head;
 	const struct fsmonitor_batch *batch;
 	intmax_t count = 0, duplicates = 0;
 	kh_str_t *shown;
@@ -529,9 +530,9 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	if (requested_oldest_seq_nr <
 	    state->current_token_data->batch_tail->batch_seq_nr) {
 		/*
-		 * The client wants older events that we have for
+		 * The client wants older events than we have for
 		 * this token_id.  This probably means that we have
-		 * flushed older events and now have a coverage gap.
+		 * truncated older events and now have a coverage gap.
 		 */
 		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
 		      requested_oldest_seq_nr,
@@ -576,7 +577,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	/*
 	 * We're going to hold onto a pointer to the current
-	 * token-data while we walk the list of files.
+	 * token-data while we walk the list of batches of files.
 	 * During this time, we will NOT be under the lock.
 	 * So we ref-count it.
 	 *
@@ -589,7 +590,9 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
 
-	batch = token_data->batch_head;
+	batch_head = token_data->batch_head;
+
+	pthread_mutex_unlock(&state->main_lock);
 
 	/*
 	 * FSMonitor Protocol V2 requires that we send a response header
@@ -609,9 +612,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	 */
 	fsmonitor_format_response_token(&response_token,
 					&token_data->token_id,
-					token_data->batch_head);
-
-	pthread_mutex_unlock(&state->main_lock);
+					batch_head);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
 	trace2_data_string("fsmonitor", the_repository, "serve.token",
@@ -620,7 +621,9 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	trace_printf_key(&trace_fsmonitor, "requested token: %s", command);
 
 	shown = kh_init_str();
-	while (batch && batch->batch_seq_nr >= requested_oldest_seq_nr) {
+	for (batch = batch_head;
+	     batch && batch->batch_seq_nr >= requested_oldest_seq_nr;
+	     batch = batch->next) {
 		size_t k;
 
 		for (k = 0; k < batch->nr; k++) {
@@ -649,7 +652,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 				count++;
 			}
 		}
-		batch = batch->next;
 	}
 
 	kh_release_str(shown);
