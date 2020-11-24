@@ -160,24 +160,25 @@ test_expect_success 'setup' '
 test_expect_success 'update-index implicitly starts daemon' '
 	test_must_fail git fsmonitor--daemon --is-running &&
 
-	git update-index --fsmonitor &&
-	sleep 1 &&
+	GIT_TRACE2_EVENT="$PWD/.git/trace_implicit_1" \
+		git update-index --fsmonitor &&
 
 	git fsmonitor--daemon --is-running &&
+	test_might_fail git fsmonitor--daemon --stop &&
 
-	git fsmonitor--daemon --stop &&
-	test_must_fail git fsmonitor--daemon --is-running
+	grep \"event\":\"start\".*\"fsmonitor--daemon\" .git/trace_implicit_1
 '
 
 test_expect_success 'status implicitly starts daemon' '
 	test_must_fail git fsmonitor--daemon --is-running &&
 
-	GIT_TRACE2_EVENT="$PWD/.git/trace_implicit" \
+	GIT_TRACE2_EVENT="$PWD/.git/trace_implicit_2" \
 		git status >actual &&
-	grep \"event\":\"child_start\".*\"fsmonitor--daemon\" .git/trace_implicit &&
 
-	git fsmonitor--daemon --stop &&
-	test_must_fail git fsmonitor--daemon --is-running
+	git fsmonitor--daemon --is-running &&
+	test_might_fail git fsmonitor--daemon --stop &&
+
+	grep \"event\":\"start\".*\"fsmonitor--daemon\" .git/trace_implicit_2
 '
 
 edit_files() {
