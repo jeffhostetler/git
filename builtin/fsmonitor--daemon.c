@@ -291,7 +291,7 @@ struct fsmonitor_batch *fsmonitor_batch__free(struct fsmonitor_batch *batch)
 
 	/*
 	 * The actual strings within the array are interned, so we don't
-	 * need to free them.
+	 * own them.
 	 */
 	free(batch->interned_paths);
 
