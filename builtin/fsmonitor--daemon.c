@@ -818,19 +818,8 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 	return NULL;
 }
 
-static int fsmonitor_run_daemon(void)
+static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 {
-	struct fsmonitor_daemon_state state;
-
-	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
-	pthread_mutex_init(&state.main_lock, NULL);
-	pthread_cond_init(&state.cookies_cond, NULL);
-	pthread_cond_init(&state.flush_cond, NULL);
-	state.error_code = 0;
-
-	if (fsmonitor_listen__ctor(&state))
-		return error(_("could not initialize listener thread"));
-
 	/*
 	 * Start the IPC thread pool before the we've started the file
 	 * system event listener thread so that we have the IPC handle
@@ -839,33 +828,21 @@ static int fsmonitor_run_daemon(void)
 	 * handle_client() to get called before we have the fsmonitor
 	 * listener thread running.)
 	 */
-	if (ipc_server_run_async(&state.ipc_server_data,
+	if (ipc_server_run_async(&state->ipc_server_data,
 				 git_path_fsmonitor(),
 				 fsmonitor__ipc_threads,
 				 handle_client,
-				 &state)) {
-		pthread_cond_destroy(&state.cookies_cond);
-		pthread_cond_destroy(&state.flush_cond);
-		pthread_mutex_destroy(&state.main_lock);
-		fsmonitor_listen__dtor(&state);
-
+				 state))
 		return error(_("could not start IPC thread pool"));
-	}
 
 	/*
 	 * Start the fsmonitor listener thread to collect filesystem
 	 * events.
 	 */
-	if (pthread_create(&state.listener_thread, NULL,
-			   fsmonitor_listen_thread_proc, &state) < 0) {
-		ipc_server_stop_async(state.ipc_server_data);
-		ipc_server_await(state.ipc_server_data);
-		ipc_server_free(state.ipc_server_data);
-
-		pthread_cond_destroy(&state.cookies_cond);
-		pthread_cond_destroy(&state.flush_cond);
-		pthread_mutex_destroy(&state.main_lock);
-		fsmonitor_listen__dtor(&state);
+	if (pthread_create(&state->listener_thread, NULL,
+			   fsmonitor_listen_thread_proc, state) < 0) {
+		ipc_server_stop_async(state->ipc_server_data);
+		ipc_server_await(state->ipc_server_data);
 
 		return error(_("could not start fsmonitor listener thread"));
 	}
@@ -875,24 +852,50 @@ static int fsmonitor_run_daemon(void)
 	 * Wait for the IPC thread pool to shutdown (whether by client
 	 * request or from filesystem activity).
 	 */
-	ipc_server_await(state.ipc_server_data);
+	ipc_server_await(state->ipc_server_data);
 
 	/*
 	 * The fsmonitor listener thread may have received a shutdown
 	 * event from the IPC thread pool, but it doesn't hurt to tell
 	 * it again.  And wait for it to shutdown.
 	 */
-	fsmonitor_listen__stop_async(&state);
-	pthread_join(state.listener_thread, NULL);
+	fsmonitor_listen__stop_async(state);
+	pthread_join(state->listener_thread, NULL);
 
-	ipc_server_free(state.ipc_server_data);
+	return state->error_code;
+}
 
+static int fsmonitor_run_daemon(void)
+{
+	struct fsmonitor_daemon_state state;
+	int err;
+
+	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
+	pthread_mutex_init(&state.main_lock, NULL);
+	pthread_cond_init(&state.cookies_cond, NULL);
+	pthread_cond_init(&state.flush_cond, NULL);
+	state.error_code = 0;
+
+	/*
+	 * Confirm that we can create platform-specific resources for the
+	 * filesystem listener before we bother starting all the threads.
+	 */
+	if (fsmonitor_listen__ctor(&state)) {
+		err = error(_("could not initialize listener thread"));
+		goto done;
+	}
+
+	err = fsmonitor_run_daemon_1(&state);
+
+done:
 	pthread_cond_destroy(&state.cookies_cond);
 	pthread_cond_destroy(&state.flush_cond);
 	pthread_mutex_destroy(&state.main_lock);
 	fsmonitor_listen__dtor(&state);
 
-	return state.error_code;
+	ipc_server_free(state.ipc_server_data);
+
+	return err;
 }
 
 /*
