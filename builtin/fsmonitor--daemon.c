@@ -1059,6 +1059,15 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 	}
 
 	if (mode == QUERY_INDEX) {
+		/*
+		 * Likewise, `fsmonitor--daemon --query-index` commands
+		 * cause this instance to behave as a CLIENT.  We read
+		 * the current index to get the token stored in the on-disk
+		 * fsmonitor extension and request everything that has
+		 * changed since then.
+		 *
+		 * This feature is primarily used by the test suite.
+		 */
 		struct strbuf answer = STRBUF_INIT;
 		struct index_state *istate = the_repository->index;
 		int ret;
