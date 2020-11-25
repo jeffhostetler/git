@@ -271,7 +271,7 @@ struct fsmonitor_batch {
 	uint64_t batch_seq_nr;
 	const char **interned_paths;
 	size_t nr, alloc;
-	unsigned int pinned:1;
+	time_t pinned_time;
 };
 
 struct fsmonitor_batch *fsmonitor_batch__new(void)
@@ -313,6 +313,8 @@ void fsmonitor_batch__add_path(struct fsmonitor_batch *batch,
 static void fsmonitor_batch__combine(struct fsmonitor_batch *batch_dest,
 				     const struct fsmonitor_batch *batch_src)
 {
+	/* assert state->main_lock */
+
 	size_t k;
 
 	ALLOC_GROW(batch_dest->interned_paths,
@@ -322,6 +324,75 @@ static void fsmonitor_batch__combine(struct fsmonitor_batch *batch_dest,
 	for (k = 0; k < batch_src->nr; k++)
 		batch_dest->interned_paths[batch_dest->nr++] =
 			batch_src->interned_paths[k];
+}
+
+/*
+ * To keep the batch list from growing unbounded in response to filesystem
+ * activity, we try to truncate old batches from the end of the list as
+ * they become irrelevant.
+ *
+ * We assume that the .git/index will be updated with the most recent token
+ * any time the index is updated.  And future commands will only ask for
+ * recent changes *since* that new token.  So as tokens advance into the
+ * future, older batch items will never be requested/needed.  So we can
+ * truncate them without loss of functionality.
+ *
+ * However, multiple commands may be talking to the daemon concurrently
+ * or perform a slow command, so a little "token skew" is possible.
+ * Therefore, we want this to be a little bit lazy and have a generous
+ * delay.
+ *
+ * The current reader thread walked backwards in time from `token->batch_head`
+ * back to `batch_marker` somewhere in the middle of the batch list.
+ *
+ * Let's walk backwards in time from that marker an arbitrary delay
+ * and truncate the list there.  Note that these timestamps are completely
+ * artificial (based on when we pinned the batch item) and not on any
+ * filesystem activity.
+ */
+#define MY_TIME_DELAY (5 * 60) /* seconds */
+
+static void fsmonitor_batch__truncate(struct fsmonitor_daemon_state *state,
+				      const struct fsmonitor_batch *batch_marker)
+{
+	/* assert state->main_lock */
+
+	const struct fsmonitor_batch *batch;
+	struct fsmonitor_batch *rest;
+	struct fsmonitor_batch *p;
+	time_t t;
+
+	if (!batch_marker)
+		return;
+
+	trace_printf_key(&trace_fsmonitor, "TRNC mark (%"PRIu64",%"PRIu64")",
+			 batch_marker->batch_seq_nr,
+			 (uint64_t)batch_marker->pinned_time);
+
+	for (batch = batch_marker; batch; batch = batch->next) {
+		if (!batch->pinned_time) /* an overflow batch */
+			continue;
+
+		t = batch->pinned_time + MY_TIME_DELAY;
+		if (t > batch_marker->pinned_time) /* too close to marker */
+			continue;
+
+		goto truncate_past_here;
+	}
+
+	return;
+
+truncate_past_here:
+	state->current_token_data->batch_tail = (struct fsmonitor_batch *)batch;
+
+	rest = ((struct fsmonitor_batch *)batch)->next;
+	((struct fsmonitor_batch *)batch)->next = NULL;
+
+	for (p = rest; p; p = fsmonitor_batch__free(p)) {
+		trace_printf_key(&trace_fsmonitor,
+				 "TRNC kill (%"PRIu64",%"PRIu64")",
+				 p->batch_seq_nr, (uint64_t)p->pinned_time);
+	}
 }
 
 static void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
@@ -439,7 +510,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	kh_str_t *shown;
 	int hash_ret;
 	int result;
-	int should_free_token_data;
 	enum fsmonitor_cookie_item_result cookie_result;
 
 	/*
@@ -602,14 +672,15 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	 * AND it allows the listener thread to do a token-reset
 	 * (and install a new `current_token_data`).
 	 *
-	 * We mark the batch as "pinned" so that the listener thread
-	 * will treat it as read-only from now on.
+	 * We mark the head of the batch list as "pinned" so that the
+	 * listener thread will treat this item as read-only (and
+	 * prevent any more paths from being added to it) from now on.
 	 */
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
 
 	batch_head = token_data->batch_head;
-	((struct fsmonitor_batch *)batch_head)->pinned = 1;
+	((struct fsmonitor_batch *)batch_head)->pinned_time = time(NULL);
 
 	pthread_mutex_unlock(&state->main_lock);
 
@@ -680,16 +751,30 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	pthread_mutex_lock(&state->main_lock);
 	if (token_data->client_ref_count > 0)
 		token_data->client_ref_count--;
-	should_free_token_data = (token_data->client_ref_count == 0 &&
-				  token_data != state->current_token_data);
+
+	if (token_data->client_ref_count == 0) {
+		if (token_data != state->current_token_data) {
+			/*
+			 * The listener thread did a token-reset while we were
+			 * walking the batch list.  Therefore, this token is
+			 * stale and can be discarded completely.  If we are
+			 * the last reader thread using this token, we own
+			 * that work.
+			 */
+			fsmonitor_free_token_data(token_data);
+		} else if (batch) {
+			/*
+			 * This batch is the first item in the list
+			 * that is older than the requested sequence
+			 * number and might be considered to be
+			 * obsolete.  See if we can truncate the list
+			 * and save some memory.
+			 */
+			fsmonitor_batch__truncate(state, batch);
+		}
+	}
+
 	pthread_mutex_unlock(&state->main_lock);
-	/*
-	 * If the listener thread did a token-reset and installed a new
-	 * token-data AND we are the last reader of this token-data, then
-	 * we need to free it.
-	 */
-	if (should_free_token_data)
-		fsmonitor_free_token_data(token_data);
 
 	trace2_data_intmax("fsmonitor", the_repository, "serve.count", count);
 	trace2_data_intmax("fsmonitor", the_repository, "serve.skipped-duplicates", duplicates);
@@ -806,7 +891,7 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 			batch->next = NULL;
 			state->current_token_data->batch_head = batch;
 			state->current_token_data->batch_tail = batch;
-		} else if (head->pinned) {
+		} else if (head->pinned_time) {
 			/*
 			 * We cannot alter the current batch list
 			 * because:
