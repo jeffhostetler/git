@@ -271,6 +271,7 @@ struct fsmonitor_batch {
 	uint64_t batch_seq_nr;
 	const char **interned_paths;
 	size_t nr, alloc;
+	unsigned int pinned:1;
 };
 
 struct fsmonitor_batch *fsmonitor_batch__new(void)
@@ -307,6 +308,20 @@ void fsmonitor_batch__add_path(struct fsmonitor_batch *batch,
 
 	ALLOC_GROW(batch->interned_paths, batch->nr + 1, batch->alloc);
 	batch->interned_paths[batch->nr++] = interned_path;
+}
+
+static void fsmonitor_batch__combine(struct fsmonitor_batch *batch_dest,
+				     const struct fsmonitor_batch *batch_src)
+{
+	size_t k;
+
+	ALLOC_GROW(batch_dest->interned_paths,
+		   batch_dest->nr + batch_src->nr + 1,
+		   batch_dest->alloc);
+
+	for (k = 0; k < batch_src->nr; k++)
+		batch_dest->interned_paths[batch_dest->nr++] =
+			batch_src->interned_paths[k];
 }
 
 static void fsmonitor_free_token_data(struct fsmonitor_token_data *token)
@@ -586,11 +601,15 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	 *
 	 * AND it allows the listener thread to do a token-reset
 	 * (and install a new `current_token_data`).
+	 *
+	 * We mark the batch as "pinned" so that the listener thread
+	 * will treat it as read-only from now on.
 	 */
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
 
 	batch_head = token_data->batch_head;
+	((struct fsmonitor_batch *)batch_head)->pinned = 1;
 
 	pthread_mutex_unlock(&state->main_lock);
 
@@ -760,6 +779,15 @@ static int cookies_cmp(const void *data, const struct hashmap_entry *he1,
 	return strcmp(a->name, keydata ? keydata : b->name);
 }
 
+/*
+ * We try to combine small batches at the front of the batch-list to avoid
+ * having a long list.  This hopefully makes it a little easier when we want
+ * to truncate and maintain the list.  However, we don't want the paths array
+ * to just keep growing and growing with realloc, so we insert an arbitrary
+ * limit.
+ */
+#define MY_COMBINE_LIMIT (1024)
+
 void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 		       struct fsmonitor_batch *batch,
 		       const struct string_list *cookie_names)
@@ -770,20 +798,49 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 	pthread_mutex_lock(&state->main_lock);
 
 	if (batch) {
-		struct fsmonitor_batch *head =
-			state->current_token_data->batch_head;
+		struct fsmonitor_batch *head;
 
-		batch->batch_seq_nr = ((head) ? head->batch_seq_nr + 1 : 0);
-		batch->next = head;
-
-		trace_printf_key(&trace_fsmonitor,
-				 "batch %"PRIu64" contains %d paths",
-				 batch->batch_seq_nr, (int)batch->nr);
-
-		state->current_token_data->batch_head = batch;
-
-		if (!state->current_token_data->batch_tail)
+		head = state->current_token_data->batch_head;
+		if (!head) {
+			batch->batch_seq_nr = 0;
+			batch->next = NULL;
+			state->current_token_data->batch_head = batch;
 			state->current_token_data->batch_tail = batch;
+		} else if (head->pinned) {
+			/*
+			 * We cannot alter the current batch list
+			 * because:
+			 *
+			 * [a] it is being transmitted to at least one
+			 * client and the handle_client() thread has a
+			 * ref-count, but not a lock on the batch list
+			 * starting with this item.
+			 *
+			 * [b] it has been transmitted in the past to
+			 * at least one client such that future
+			 * requests are relative to this head batch.
+			 *
+			 * So, we can only prepend a new batch onto
+			 * the front of the list.
+			 */
+			batch->batch_seq_nr = head->batch_seq_nr + 1;
+			batch->next = head;
+			state->current_token_data->batch_head = batch;
+		} else if (head->nr + batch->nr > MY_COMBINE_LIMIT) {
+			/*
+			 * The head batch in the list has never been
+			 * transmitted to a client, but folding the
+			 * contents of the new batch onto it would
+			 * exceed our arbitrary limit, so just prepend
+			 * the new batch onto the list.
+			 */
+			batch->batch_seq_nr = head->batch_seq_nr + 1;
+			batch->next = head;
+			state->current_token_data->batch_head = batch;
+		} else {
+			fsmonitor_batch__combine(head, batch);
+			fsmonitor_batch__free(batch);
+		}
 	}
 
 	if (cookie_names->nr)
