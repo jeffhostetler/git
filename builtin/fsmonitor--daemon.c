@@ -438,6 +438,11 @@ void fsmonitor_force_resync(struct fsmonitor_daemon_state *state)
 
 	pthread_mutex_lock(&state->main_lock);
 
+	trace_printf_key(&trace_fsmonitor,
+			 "force resync [old '%s'][new '%s']",
+			 state->current_token_data->token_id.buf,
+			 new_one->token_id.buf);
+
 	fsmonitor_cookie_abort_all(state);
 
 	if (state->current_token_data->client_ref_count == 0)
@@ -537,16 +542,12 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	if (!strcmp(command, "flush")) {
 		/*
-		 * Tell the listener thread to fake a token-resync and
-		 * flush everything we have cached (just like if lost
-		 * sync with the filesystem).
-		 *
-		 * Wait here until it has installed a new token-data
-		 * into our state.
+		 * Flush all of our cached data and generate a new token
+		 * just like if we lost sync with the filesystem.
 		 *
 		 * Then send a trivial response using the new token.
 		 */
-		fsmonitor_listen__request_flush(state);
+		fsmonitor_force_resync(state);
 		result = 0;
 		goto send_trivial_response;
 	}
@@ -1017,7 +1018,6 @@ static int fsmonitor_run_daemon(void)
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.main_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
-	pthread_cond_init(&state.flush_cond, NULL);
 	state.error_code = 0;
 
 	/*
@@ -1033,7 +1033,6 @@ static int fsmonitor_run_daemon(void)
 
 done:
 	pthread_cond_destroy(&state.cookies_cond);
-	pthread_cond_destroy(&state.flush_cond);
 	pthread_mutex_destroy(&state.main_lock);
 	fsmonitor_listen__dtor(&state);
 

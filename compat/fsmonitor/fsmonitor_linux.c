@@ -238,17 +238,6 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	close(data->fd_send_shutdown);
 }
 
-/*
- * Behave as if the kernel dropped some events and resync.
- * A proper simulation could inject an event into the listener thread's
- * poll[] and have it handle it, but I'm not sure that we need to be that
- * precise.  The main idea is to setup a new token-data.
- */
-void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
-{
-	fsmonitor_force_resync(state);
-}
-
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 	uint32_t deleted = IN_DELETE | IN_DELETE_SELF | IN_MOVED_FROM;

@@ -404,21 +404,6 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	CFRunLoopStop(data->rl);
 }
 
-/*
- * Behave as if the kernel sent our FSEventCallback a dropped event message.
- * A proper simulation would try to inject an event into the listener thread's
- * FSEventStream, but I'm not sure how to do that or that it matters, so just
- * reset our data structures as we would in the callback.
- *
- * The difference is not that important now that the callback only touches
- * shared data structures in `fsmonitor_publish()` and it can
- * control the locking.
- */
-void fsmonitor_listen__request_flush(struct fsmonitor_daemon_state *state)
-{
-	fsmonitor_force_resync(state);
-}
-
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data;
