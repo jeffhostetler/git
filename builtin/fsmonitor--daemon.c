@@ -567,16 +567,16 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	/* try V2 token */
 
-	pthread_mutex_lock(&state->main_lock);
-
 	if (fsmonitor_parse_client_token(command, &requested_token_id,
 					 &requested_oldest_seq_nr)) {
 		error(_("fsmonitor: invalid V2 protocol token '%s'"),
 		      command);
-		pthread_mutex_unlock(&state->main_lock);
 		result = -1;
 		goto send_trivial_response;
 	}
+
+	pthread_mutex_lock(&state->main_lock);
+
 	if (!state->current_token_data) {
 		/*
 		 * We don't have a current token.  This may mean that
