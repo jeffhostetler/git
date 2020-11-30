@@ -616,13 +616,15 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	    state->current_token_data->batch_tail->batch_seq_nr) {
 		/*
 		 * The client wants older events than we have for
-		 * this token_id.  This probably means that we have
-		 * truncated older events and now have a coverage gap.
+		 * this token_id.  This means that the end of our
+		 * batch list was truncated and we cannot give the
+		 * client a complete snapshot relative to their
+		 * request.
 		 */
-		error(_("fsmonitor: token gap '%"PRIu64"' '%"PRIu64"'"),
-		      requested_oldest_seq_nr,
-		      state->current_token_data->batch_tail->batch_seq_nr);
 		pthread_mutex_unlock(&state->main_lock);
+
+		trace_printf_key(&trace_fsmonitor,
+				 "client requested truncated data");
 		result = 0;
 		goto send_trivial_response;
 	}
