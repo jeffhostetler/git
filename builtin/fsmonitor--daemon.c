@@ -654,10 +654,10 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		 * and created a new token while we were waiting for the
 		 * cookie file to be created!  Just give up.
 		 */
-		error(_("fsmonitor: lost filesystem sync '%s' '%s'"),
-		      requested_token_id.buf,
-		      state->current_token_data->token_id.buf);
 		pthread_mutex_unlock(&state->main_lock);
+
+		trace_printf_key(&trace_fsmonitor,
+				 "lost filesystem sync");
 		result = 0;
 		goto send_trivial_response;
 	}
