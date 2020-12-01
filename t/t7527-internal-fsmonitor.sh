@@ -16,13 +16,30 @@ kill_repo () {
 	return 0
 }
 
+# The --start option uses daemonize() to start a child process on Unix
+# and the parent process immediately exits.  This causes a problem for
+# tests because the next command in the test script may start to
+# execute before the child is ready to receive commands.  Insert a small
+# delay to make CI/PR builds more stable.
+#
+start_daemon () {
+	case "$#" in
+		1) r="-C $1";;
+		*) r="";
+	esac
+
+	git $r fsmonitor--daemon --start || return $?
+
+	sleep 1
+	return 0
+}
+
 test_expect_success 'explicit daemon start and stop' '
 	test_when_finished "kill_repo test_explicit" &&
 
 	git init test_explicit &&
+	start_daemon test_explicit &&
 
-	git -C test_explicit fsmonitor--daemon --start &&
-	sleep 1 &&
 	git -C test_explicit fsmonitor--daemon --is-running &&
 	git -C test_explicit fsmonitor--daemon --stop &&
 	test_must_fail git -C test_explicit fsmonitor--daemon --is-running
@@ -64,8 +81,7 @@ test_expect_success 'implicit daemon stop (delete .git)' '
 
 	git init test_implicit_1 &&
 
-	git -C test_implicit_1 fsmonitor--daemon --start &&
-	sleep 1 &&
+	start_daemon test_implicit_1 &&
 
 	git -C test_implicit_1 fsmonitor--daemon --is-running &&
 
@@ -89,8 +105,7 @@ test_expect_success 'implicit daemon stop (rename .git)' '
 
 	git init test_implicit_2 &&
 
-	git -C test_implicit_2 fsmonitor--daemon --start &&
-	sleep 1 &&
+	start_daemon test_implicit_2 &&
 
 	git -C test_implicit_2 fsmonitor--daemon --is-running &&
 
@@ -114,8 +129,8 @@ test_expect_success 'cannot start multiple daemons' '
 
 	git init test_multiple &&
 
-	git -C test_multiple fsmonitor--daemon --start &&
-	sleep 1 &&
+	start_daemon test_multiple &&
+
 	git -C test_multiple fsmonitor--daemon --is-running &&
 
 	test_must_fail git -C test_multiple fsmonitor--daemon --start 2>actual &&
@@ -255,8 +270,8 @@ clean_up_repo_and_stop_daemon () {
 test_expect_success 'edit some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	edit_files &&
 	sleep 1 &&
@@ -270,8 +285,8 @@ test_expect_success 'edit some files' '
 test_expect_success 'create some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	create_files &&
 	sleep 1 &&
@@ -284,8 +299,8 @@ test_expect_success 'create some files' '
 test_expect_success 'delete some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	delete_files &&
 	sleep 1 &&
@@ -298,8 +313,8 @@ test_expect_success 'delete some files' '
 test_expect_success 'rename some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	rename_files &&
 	sleep 1 &&
@@ -315,8 +330,8 @@ test_expect_success 'rename some files' '
 test_expect_success 'rename directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	mv dirtorename dirrenamed &&
 	sleep 1 &&
@@ -328,8 +343,8 @@ test_expect_success 'rename directory' '
 test_expect_success 'file changes to directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	file_to_directory &&
 	sleep 1 &&
@@ -341,8 +356,8 @@ test_expect_success 'file changes to directory' '
 test_expect_success 'directory changes to a file' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" git fsmonitor--daemon --start &&
-	sleep 1 &&
+	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
+		start_daemon &&
 
 	directory_to_file &&
 	sleep 1 &&
@@ -365,8 +380,7 @@ test_expect_success 'flush cached data' '
 
 	GIT_TEST_FSMONITOR_TOKEN=true \
 	GIT_TRACE_FSMONITOR="$PWD/.git/trace_daemon" \
-		git -C test_flush fsmonitor--daemon --start &&
-	sleep 1 &&
+		start_daemon test_flush &&
 
 	# The daemon should have an initial token with no events in _0 and
 	# then a few (probably platform-specific number of) events in _1.
