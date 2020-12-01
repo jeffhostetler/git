@@ -162,6 +162,7 @@ test_expect_success 'update-index implicitly starts daemon' '
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace_implicit_1" \
 		git update-index --fsmonitor &&
+	sleep 1 &&
 
 	git fsmonitor--daemon --is-running &&
 	test_might_fail git fsmonitor--daemon --stop &&
@@ -174,6 +175,7 @@ test_expect_success 'status implicitly starts daemon' '
 
 	GIT_TRACE2_EVENT="$PWD/.git/trace_implicit_2" \
 		git status >actual &&
+	sleep 1 &&
 
 	git fsmonitor--daemon --is-running &&
 	test_might_fail git fsmonitor--daemon --stop &&
