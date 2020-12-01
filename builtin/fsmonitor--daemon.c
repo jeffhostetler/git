@@ -1306,7 +1306,17 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 // TODO  [3] The cookie file creation event could be arriving WHILE
 // TODO      connection is established.
 // TODO  [4] The client could decide the timeout (and just hang up).
-//
+// TODO
+// TODO Better yet, let's figure out how to get rid of the cookie file.
+// TODO [a] On Windows, we can use CreateEvent() to create a "wait for idle"
+// TODO     event, add it *last* to the data->hListener[] so that the
+// TODO     listener thread in WaitForMultipleObjects() on the infinite wait
+// TODO     loop will only wake *after* any FS data events have been processed.
+// TODO     handle_client() sets this "wait for idle" event and waits on a
+// TODO     condition.  the listener thread broadcasts to the condition and
+// TODO     releases all clients and resets the event.
+// TODO [b] On Mac, TBD.
+// TODO [c] on Linux, TDB.
 
 
 //////////////////////////////////////////////////////////////////
@@ -1314,12 +1324,3 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 // TODO   [] Consider submodules
 // TODO   [] Consider worktree feature
 // TODO   [] Cookie files are broken
-//
-// TODO Need to trim ancient items from batch list.
-// TODO   [] When the .git/index is updated, future commands will
-// TODO      be relative to the token contained within it.  So we
-// TODO      don't need to hang onto ancient events that would only
-// TODO      be referenced by an older version of the index.
-// TODO   [] So perhaps after the index is updated and a generous
-// TODO      grace period (for slow commands), we can truncate the
-// TODO      current batch list.
