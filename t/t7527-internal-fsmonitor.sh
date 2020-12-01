@@ -4,6 +4,16 @@ test_description='internal file system watcher'
 
 . ./test-lib.sh
 
+# Ask the fsmonitor daemon to insert a little delay before responding to
+# client commands like `git status` and `git fsmonitor--daemon --query` to
+# allow recent filesystem events to be received by the daemon.  This helps
+# the CI/PR builds be more stable.
+#
+# An arbitrary millisecond value.
+#
+GIT_TEST_FSMONITOR_CLIENT_DELAY=1000
+export GIT_TEST_FSMONITOR_CLIENT_DELAY
+
 git fsmonitor--daemon --is-supported || {
 	skip_all="The internal FSMonitor is not supported on this platform"
 	test_done
@@ -63,12 +73,13 @@ test_expect_success 'implicit daemon start' '
 		git -C test_implicit fsmonitor--daemon --query 0 >actual &&
 	nul_to_q <actual >actual.filtered &&
 	grep ":internal:" actual.filtered &&
-	sleep 1 &&
 
 	# confirm that a daemon was started in the background.  since this
 	# could be an exec child with --start or --run (depending on the
 	# platform), just confirm that the foreground command received a
 	# response from the daemon.
+
+	sleep 1 &&
 	grep :\"query-daemon/response-length\" .git/trace &&
 
 	git -C test_implicit fsmonitor--daemon --is-running &&
@@ -87,7 +98,6 @@ test_expect_success 'implicit daemon stop (delete .git)' '
 
 	# deleting the .git directory will implicitly stop the daemon.
 	rm -rf test_implicit_1/.git &&
-	sleep 1 &&
 
 	# Create an empty .git directory so that the following Git command
 	# will stay relative to the `-C` directory.  Without this, the Git
@@ -95,6 +105,7 @@ test_expect_success 'implicit daemon stop (delete .git)' '
 	# to the containing Git source tree.  This would make the test
 	# result dependent upon whether we were using fsmonitor on our
 	# development worktree.
+	sleep 1 &&
 	mkdir test_implicit_1/.git &&
 
 	test_must_fail git -C test_implicit_1 fsmonitor--daemon --is-running
@@ -111,7 +122,6 @@ test_expect_success 'implicit daemon stop (rename .git)' '
 
 	# renaming the .git directory will implicitly stop the daemon.
 	mv test_implicit_2/.git test_implicit_2/.xxx &&
-	sleep 1 &&
 
 	# Create an empty .git directory so that the following Git command
 	# will stay relative to the `-C` directory.  Without this, the Git
@@ -119,6 +129,7 @@ test_expect_success 'implicit daemon stop (rename .git)' '
 	# to the containing Git source tree.  This would make the test
 	# result dependent upon whether we were using fsmonitor on our
 	# development worktree.
+	sleep 1 &&
 	mkdir test_implicit_2/.git &&
 
 	test_must_fail git -C test_implicit_2 fsmonitor--daemon --is-running
@@ -249,13 +260,9 @@ verify_status() {
 # ensure we are getting the OS notifications and do not try to confirm what
 # is reported by `git status`.
 #
-# We put a `sleep 1` immediately after starting the daemon to ensure that
-# it has a chance to start listening before we start creating FS events.
-# This is to help the PR/CI test runs to be less random.
-#
-# We put a `sleep 1` after the file operations we want to confirm to ensure
-# that the daemon has a chance to log the events to our trace log.  This
-# helps avoid false failures due to slow log buffer flushing by the daemon.
+# We run a simple query after modifying the filesystem just to introduce
+# a bit of a delay so that the trace logging from the daemon has time to
+# get flushed to disk.
 #
 # We `reset` and `clean` at the bottom of each test (and before stopping the
 # daemon) because these commands might implicitly restart the daemon.
@@ -274,7 +281,8 @@ test_expect_success 'edit some files' '
 		start_daemon &&
 
 	edit_files &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dir1/modified$"  .git/trace &&
 	grep "^event: dir2/modified$"  .git/trace &&
@@ -289,7 +297,8 @@ test_expect_success 'create some files' '
 		start_daemon &&
 
 	create_files &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dir1/new$" .git/trace &&
 	grep "^event: dir2/new$" .git/trace &&
@@ -303,7 +312,8 @@ test_expect_success 'delete some files' '
 		start_daemon &&
 
 	delete_files &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dir1/delete$" .git/trace &&
 	grep "^event: dir2/delete$" .git/trace &&
@@ -317,7 +327,8 @@ test_expect_success 'rename some files' '
 		start_daemon &&
 
 	rename_files &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dir1/rename$"  .git/trace &&
 	grep "^event: dir2/rename$"  .git/trace &&
@@ -334,7 +345,8 @@ test_expect_success 'rename directory' '
 		start_daemon &&
 
 	mv dirtorename dirrenamed &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dirtorename/*$" .git/trace &&
 	grep "^event: dirrenamed/*$"  .git/trace
@@ -347,7 +359,8 @@ test_expect_success 'file changes to directory' '
 		start_daemon &&
 
 	file_to_directory &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: delete$"     .git/trace &&
 	grep "^event: delete/new$" .git/trace
@@ -360,7 +373,8 @@ test_expect_success 'directory changes to a file' '
 		start_daemon &&
 
 	directory_to_file &&
-	sleep 1 &&
+
+	git fsmonitor--daemon --query 0 >/dev/null 2>&1 &&
 
 	grep "^event: dir1$" .git/trace
 '
@@ -391,7 +405,6 @@ test_expect_success 'flush cached data' '
 
 	touch test_flush/file_1 &&
 	touch test_flush/file_2 &&
-	sleep 1 &&
 
 	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_1 &&
 	nul_to_q <actual_1 >actual_q1 &&
@@ -412,7 +425,6 @@ test_expect_success 'flush cached data' '
 	grep "^:internal:test_00000002:0Q$" actual_q2 &&
 
 	touch test_flush/file_3 &&
-	sleep 1 &&
 
 	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_3 &&
 	nul_to_q <actual_3 >actual_q3 &&
