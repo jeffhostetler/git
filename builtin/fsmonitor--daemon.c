@@ -940,15 +940,8 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 static void *fsmonitor_listen_thread_proc(void *_state)
 {
 	struct fsmonitor_daemon_state *state = _state;
-	struct fsmonitor_token_data *new_one = NULL;
 
 	trace2_thread_start("fsm-listen");
-
-	new_one = fsmonitor_new_token_data();
-
-	pthread_mutex_lock(&state->main_lock);
-	state->current_token_data = new_one;
-	pthread_mutex_unlock(&state->main_lock);
 
 	fsmonitor_listen__loop(state);
 
@@ -968,10 +961,7 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	/*
 	 * Start the IPC thread pool before the we've started the file
 	 * system event listener thread so that we have the IPC handle
-	 * before we need it.  (We do need to be carefull because
-	 * quickly arriving client connection events may cause
-	 * handle_client() to get called before we have the fsmonitor
-	 * listener thread running.)
+	 * before we need it.
 	 */
 	if (ipc_server_run_async(&state->ipc_server_data,
 				 git_path_fsmonitor(),
@@ -1019,6 +1009,7 @@ static int fsmonitor_run_daemon(void)
 	pthread_mutex_init(&state.main_lock, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
 	state.error_code = 0;
+	state.current_token_data = fsmonitor_new_token_data();
 
 	/*
 	 * Confirm that we can create platform-specific resources for the
