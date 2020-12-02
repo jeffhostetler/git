@@ -277,8 +277,12 @@ clean_up_repo_and_stop_daemon () {
 test_expect_success 'edit some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	edit_files &&
 
@@ -293,8 +297,12 @@ test_expect_success 'edit some files' '
 test_expect_success 'create some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	create_files &&
 
@@ -308,8 +316,12 @@ test_expect_success 'create some files' '
 test_expect_success 'delete some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	delete_files &&
 
@@ -323,8 +335,12 @@ test_expect_success 'delete some files' '
 test_expect_success 'rename some files' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	rename_files &&
 
@@ -341,8 +357,12 @@ test_expect_success 'rename some files' '
 test_expect_success 'rename directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	mv dirtorename dirrenamed &&
 
@@ -355,8 +375,12 @@ test_expect_success 'rename directory' '
 test_expect_success 'file changes to directory' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	file_to_directory &&
 
@@ -369,8 +393,12 @@ test_expect_success 'file changes to directory' '
 test_expect_success 'directory changes to a file' '
 	test_when_finished "clean_up_repo_and_stop_daemon" &&
 
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace" \
-		start_daemon &&
+	(
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon
+	) &&
 
 	directory_to_file &&
 
@@ -392,9 +420,15 @@ test_expect_success 'flush cached data' '
 
 	git init test_flush &&
 
-	GIT_TEST_FSMONITOR_TOKEN=true \
-	GIT_TRACE_FSMONITOR="$PWD/.git/trace_daemon" \
-		start_daemon test_flush &&
+	(
+		GIT_TEST_FSMONITOR_TOKEN=true &&
+		export GIT_TEST_FSMONITOR_TOKEN &&
+
+		GIT_TRACE_FSMONITOR="$PWD/.git/trace_daemon" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon test_flush
+	) &&
 
 	# The daemon should have an initial token with no events in _0 and
 	# then a few (probably platform-specific number of) events in _1.
