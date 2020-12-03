@@ -1222,7 +1222,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 			usage_with_options(builtin_fsmonitor__daemon_usage,
 					   options);
 
-		ret = fsmonitor_daemon__send_query_command(argv[0], &answer);
+		ret = fsmonitor__send_ipc_query(argv[0], &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
 
@@ -1252,7 +1252,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		if (!istate->fsmonitor_last_update)
 			die("index file does not have fsmonitor extension");
 
-		ret = fsmonitor_daemon__send_query_command(
+		ret = fsmonitor__send_ipc_query(
 			istate->fsmonitor_last_update, &answer);
 		if (ret < 0)
 			die(_("could not query fsmonitor daemon"));
@@ -1291,7 +1291,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		/*
 		 * Windows cannot daemonize(); emulate it.
 		 */
-		return !!fsmonitor_spawn_daemon();
+		return !!fsmonitor__spawn_daemon();
 #else
 		/*
 		 * Run the daemon in the process of the child created

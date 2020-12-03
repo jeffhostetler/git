@@ -3,7 +3,6 @@
 #include "dir.h"
 #include "ewah/ewok.h"
 #include "fsmonitor.h"
-#include "fsmonitor--daemon.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "trace2.h"
@@ -159,10 +158,10 @@ static int query_fsmonitor(int version, const char *last_update, struct strbuf *
 
 	if (!strcmp(core_fsmonitor, ":internal:")) {
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
-		return fsmonitor_daemon__send_query_command(last_update, query_result);
+		return fsmonitor__send_ipc_query(last_update, query_result);
 #else
 		/* Fake a trivial response. */
-		warning(_("internal fsmonitor unavailable; falling back"));
+		warning(_("fsmonitor--daemon unavailable; falling back"));
 		strbuf_add(query_result, "/", 2);
 		return 0;
 #endif
@@ -430,9 +429,8 @@ void tweak_fsmonitor(struct index_state *istate)
 
 GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
 
-int fsmonitor_daemon__send_query_command(
-	const char *since_token,
-	struct strbuf *answer)
+int fsmonitor__send_ipc_query(const char *since_token,
+			      struct strbuf *answer)
 {
 	int ret = -1;
 	int fd = -1;
@@ -482,7 +480,7 @@ try_again:
 			goto done;
 
 		tried_to_spawn++;
-		if (fsmonitor_spawn_daemon())
+		if (fsmonitor__spawn_daemon())
 			goto done;
 
 		/*
@@ -515,13 +513,7 @@ done:
 	return ret;
 }
 
-/*
- * Spawn a new long-running server in a background process.
- *
- * The daemon may or may not be ready yet when we return, so our
- * caller may need to spin until the daemon is ready.
- */
-int fsmonitor_spawn_daemon(void)
+int fsmonitor__spawn_daemon(void)
 {
 #ifndef GIT_WINDOWS_NATIVE
 	const char *args[] = { "fsmonitor--daemon", "--start", NULL };

@@ -75,4 +75,26 @@ static inline void mark_fsmonitor_invalid(struct index_state *istate, struct cac
 	}
 }
 
+#ifdef HAVE_FSMONITOR_DAEMON_BACKEND
+/*
+ * Connect to a `git-fsmonitor--daemon` process via simple-ipc
+ * and ask for the set of changed files since the given token.
+ *
+ * This DOES NOT use the hook interface.
+ *
+ * Spawn a daemon process in the background if necessary.
+ */
+int fsmonitor__send_ipc_query(const char *since_token,
+			      struct strbuf *answer);
+
+/*
+ * Spawn a new long-running `git-fsmonitor--daemon` process in the
+ * background.
+ *
+ * The daemon may or may not be ready yet when we return, so our
+ * caller may need to spin until the daemon is ready.
+ */
+int fsmonitor__spawn_daemon(void);
+#endif
+
 #endif

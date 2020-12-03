@@ -11,18 +11,6 @@
 
 extern const char *git_path_fsmonitor(void);
 
-/*
- * Connect to the fsmonitor daemon process (spawn it if necessary)
- * and ask for the set of changed files since the given token.
- */
-int fsmonitor_daemon__send_query_command(
-	const char *since_token,
-	struct strbuf *answer);
-
-int fsmonitor_spawn_daemon(void);
-
-/* Internal fsmonitor */
-
 struct fsmonitor_batch;
 
 /*
