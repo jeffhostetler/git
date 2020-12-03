@@ -80,7 +80,7 @@ test_expect_success 'implicit daemon start' '
 	# response from the daemon.
 
 	sleep 1 &&
-	grep :\"query-daemon/response-length\" .git/trace &&
+	grep :\"query/response-length\" .git/trace &&
 
 	git -C test_implicit fsmonitor--daemon --is-running &&
 	git -C test_implicit fsmonitor--daemon --stop &&

@@ -442,9 +442,9 @@ int fsmonitor__send_ipc_query(const char *since_token,
 	options.wait_if_busy = 1;
 	options.wait_if_not_found = 0;
 
-	trace2_region_enter("fsm_client", "query-daemon", NULL);
+	trace2_region_enter("fsm_client", "query", NULL);
 
-	trace2_data_string("fsm_client", NULL, "query-daemon/command",
+	trace2_data_string("fsm_client", NULL, "query/command",
 			   since_token);
 
 try_again:
@@ -456,7 +456,7 @@ try_again:
 		close(fd);
 
 		trace2_data_intmax("fsm_client", NULL,
-				   "query-daemon/response-length", answer->len);
+				   "query/response-length", answer->len);
 
 		if (trace2_is_enabled()) {
 			static char trivial_response[3] = { '\0', '/', '\0' };
@@ -465,7 +465,7 @@ try_again:
 			if (trivial)
 				trace2_data_intmax(
 					"fsm_client", NULL,
-					"query-daemon/trivial-response",
+					"query/trivial-response",
 					trivial);
 		}
 
@@ -508,7 +508,7 @@ try_again:
 	}
 
 done:
-	trace2_region_leave("fsm_client", "query-daemon", NULL);
+	trace2_region_leave("fsm_client", "query", NULL);
 
 	return ret;
 }
