@@ -471,7 +471,7 @@ try_again:
 		goto done;
 
 	case IPC_STATE__NOT_LISTENING:
-		ret = error(_("query_daemon: daemon not available"));
+		ret = error(_("fsmonitor__send_ipc_query: daemon not available"));
 		goto done;
 
 	case IPC_STATE__PATH_NOT_FOUND:
@@ -495,13 +495,13 @@ try_again:
 		goto try_again;
 
 	case IPC_STATE__INVALID_PATH:
-		ret = error(_("query_daemon: invalid path '%s'"),
+		ret = error(_("fsmonitor__send_ipc_query: invalid path '%s'"),
 			    git_path_fsmonitor_ipc());
 		goto done;
 
 	case IPC_STATE__OTHER_ERROR:
 	default:
-		ret = error(_("query_daemon: unspecified error on '%s'"),
+		ret = error(_("fsmonitor__send_ipc_query: unspecified error on '%s'"),
 			    git_path_fsmonitor_ipc());
 		goto done;
 	}
@@ -510,6 +510,38 @@ done:
 	trace2_region_leave("fsm_client", "query", NULL);
 
 	return ret;
+}
+
+int fsmonitor__send_ipc_command(const char *command,
+				struct strbuf *answer)
+{
+	struct ipc_client_connect_options options
+		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
+	int ret;
+	int fd;
+	enum ipc_active_state state;
+
+	strbuf_reset(answer);
+
+	options.wait_if_busy = 1;
+	options.wait_if_not_found = 0;
+
+	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
+	if (state != IPC_STATE__LISTENING) {
+		die("fsmonitor--daemon is not running");
+		return -1;
+	}
+
+	ret = ipc_client_send_command_to_fd(fd, command, answer);
+	close(fd);
+
+	if (ret == -1) {
+		die("could not send '%s' command to fsmonitor--daemon",
+		    command);
+		return -1;
+	}
+
+	return 0;
 }
 
 int fsmonitor__spawn_daemon(void)

@@ -15,8 +15,14 @@
 #include "khash.h"
 
 static const char * const builtin_fsmonitor__daemon_usage[] = {
-	N_("git fsmonitor--daemon [--query] <token>"),
-	N_("git fsmonitor--daemon <command-mode> [<options>...]"),
+	N_("git fsmonitor--daemon --start"),
+	N_("git fsmonitor--daemon --run"),
+	N_("git fsmonitor--daemon --stop"),
+	N_("git fsmonitor--daemon --is-running"),
+	N_("git fsmonitor--daemon --is-supported"),
+	N_("git fsmonitor--daemon --query <token>"),
+	N_("git fsmonitor--daemon --query-index"),
+	N_("git fsmonitor--daemon --flush"),
 	NULL
 };
 
@@ -1065,77 +1071,23 @@ done:
 }
 
 /*
- * If the daemon is running (in another process), ask it to quit and
- * wait for it to stop.
+ * Acting as a CLIENT.
+ *
+ * Send an IPC query to a `git-fsmonitor--daemon` SERVER process and
+ * ask for the changes since the given token.  This will implicitly
+ * start a daemon process if necessary.  The daemon process will
+ * persist after we exit.
+ *
+ * This feature is primarily used by the test suite.
  */
-static int fsmonitor_daemon__send_stop_command(void)
+static int do_as_client__query_token(const char *token)
 {
 	struct strbuf answer = STRBUF_INIT;
-	struct ipc_client_connect_options options
-		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
 	int ret;
-	int fd;
-	enum ipc_active_state state;
 
-	options.wait_if_busy = 1;
-	options.wait_if_not_found = 0;
-
-	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
-	if (state != IPC_STATE__LISTENING) {
-		die("daemon not running");
-		return -1;
-	}
-
-	ret = ipc_client_send_command_to_fd(fd, "quit", &answer);
-	strbuf_release(&answer);
-	close(fd);
-
-	if (ret == -1) {
-		die("could sent quit command to daemon");
-		return -1;
-	}
-
-	// TODO Should we get rid of this polling loop and just return
-	// TODO after sending the quit command?
-
-	trace2_region_enter("fsmonitor", "polling-for-daemon-exit", NULL);
-	while (fsmonitor__get_ipc_state() == IPC_STATE__LISTENING)
-		sleep_millisec(50);
-	trace2_region_leave("fsmonitor", "polling-for-daemon-exit", NULL);
-
-	return 0;
-}
-
-/*
- * Tell the daemon to flush its cache.  This is primarily a test
- * feature used to simulate a loss of sync with the filesystem where
- * we miss events.
- */
-static int fsmonitor_daemon__send_flush_command(void)
-{
-	struct strbuf answer = STRBUF_INIT;
-	struct ipc_client_connect_options options
-		= IPC_CLIENT_CONNECT_OPTIONS_INIT;
-	int ret;
-	int fd;
-	enum ipc_active_state state;
-
-	options.wait_if_busy = 1;
-	options.wait_if_not_found = 0;
-
-	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
-	if (state != IPC_STATE__LISTENING) {
-		die("daemon not running");
-		return -1;
-	}
-
-	ret = ipc_client_send_command_to_fd(fd, "flush", &answer);
-	close(fd);
-
-	if (ret == -1) {
-		die("could sent flush command to daemon");
-		return -1;
-	}
+	ret = fsmonitor__send_ipc_query(token, &answer);
+	if (ret < 0)
+		die(_("could not query fsmonitor--daemon"));
 
 	write_in_full(1, answer.buf, answer.len);
 	strbuf_release(&answer);
@@ -1143,7 +1095,122 @@ static int fsmonitor_daemon__send_flush_command(void)
 	return 0;
 }
 
+/*
+ * Acting as a CLIENT.
+ *
+ * Read the `.git/index` to get the last token written to the FSMonitor index
+ * extension and use that to make a query.
+ *
+ * This feature is primarily used by the test suite.
+ */
+static int do_as_client__query_from_index(void)
+{
+	struct index_state *istate = the_repository->index;
+
+	setup_git_directory();
+	if (do_read_index(istate, the_repository->index_file, 0) < 0)
+		die("unable to read index file");
+	if (!istate->fsmonitor_last_update)
+		die("index file does not have fsmonitor extension");
+
+	return do_as_client__query_token(istate->fsmonitor_last_update);
+}
+
+/*
+ * Acting as a CLIENT.
+ *
+ * Send a "quit" command to the `git-fsmonitor--daemon` (if running)
+ * and wait for it to shutdown.
+ */
+static int do_as_client__send_stop(void)
+{
+	struct strbuf answer = STRBUF_INIT;
+	int ret;
+
+	ret = fsmonitor__send_ipc_command("quit", &answer);
+
+	/* The quit command does not return any response data. */
+	strbuf_release(&answer);
+
+	if (ret)
+		return ret;
+
+	trace2_region_enter("fsm_client", "polling-for-daemon-exit", NULL);
+	while (fsmonitor__get_ipc_state() == IPC_STATE__LISTENING)
+		sleep_millisec(50);
+	trace2_region_leave("fsm_client", "polling-for-daemon-exit", NULL);
+
+	return 0;
+}
+
+/*
+ * Acting as a CLIENT.
+ *
+ * Send a "flush" command to the `git-fsmonitor--daemon` (if running)
+ * and tell it to flush its cache.
+ *
+ * This feature is primarily used by the test suite to simulate a loss of
+ * sync with the filesystem where we miss kernel events.
+ */
+static int do_as_client__send_flush(void)
+{
+	struct strbuf answer = STRBUF_INIT;
+	int ret;
+
+	ret = fsmonitor__send_ipc_command("flush", &answer);
+	if (ret)
+		return ret;
+
+	write_in_full(1, answer.buf, answer.len);
+	strbuf_release(&answer);
+
+	return 0;
+}
+
+static int try_to_start_background_daemon(void)
+{
+	/*
+	 * Before we try to create a background daemon process, see
+	 * if a daemon process is already listening.  This makes it
+	 * easier for us to report an already-listening error to the
+	 * console, since our spawn/daemon can only report the success
+	 * of creating the background process (and not whether it
+	 * immediately exited).
+	 */
+	if (is_ipc_daemon_listening())
+		die("fsmonitor--daemon is already running.");
+
+#ifdef GIT_WINDOWS_NATIVE
+	/*
+	 * Windows cannot daemonize(); emulate it.
+	 */
+	return !!fsmonitor__spawn_daemon();
+#else
+	/*
+	 * Run the daemon in the process of the child created
+	 * by fork() since only the child returns from daemonize().
+	 */
+	if (daemonize())
+		BUG(_("daemonize() not supported on this platform"));
+	return !!fsmonitor_run_daemon();
 #endif
+}
+
+static int try_to_run_foreground_daemon(void)
+{
+	/*
+	 * Technically, we don't need to probe for an existing daemon
+	 * process, since we could just call `fsmonitor_run_daemon()`
+	 * and let it fail if the pipe/socket is busy.  But this gives
+	 * us a nicer error message.
+	 */
+	if (is_ipc_daemon_listening())
+		die("fsmonitor--daemon is already running.");
+
+	return !!fsmonitor_run_daemon();
+}
+
+#endif /* HAVE_FSMONITOR_DAEMON_BACKEND */
 
 int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 {
@@ -1151,12 +1218,21 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		QUERY = 0, QUERY_INDEX, START, RUN, STOP, FLUSH, IS_RUNNING, IS_SUPPORTED
 	} mode = QUERY;
 	struct option options[] = {
-		OPT_CMDMODE(0, "start", &mode, N_("run in the background"),
+		OPT_CMDMODE(0, "start", &mode,
+			    N_("run the daemon in the background"),
 			    START),
 		OPT_CMDMODE(0, "run", &mode,
 			    N_("run the daemon in the foreground"), RUN),
 		OPT_CMDMODE(0, "stop", &mode, N_("stop the running daemon"),
 			    STOP),
+
+		OPT_CMDMODE(0, "is-running", &mode,
+			    N_("test whether the daemon is running"),
+			    IS_RUNNING),
+		OPT_CMDMODE(0, "is-supported", &mode,
+			    N_("does this platform support fsmonitor--daemon"),
+			    IS_SUPPORTED),
+
 		OPT_CMDMODE(0, "query", &mode,
 			    N_("query the daemon (starting if necessary)"),
 			    QUERY),
@@ -1166,16 +1242,10 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		OPT_CMDMODE(0, "flush", &mode, N_("flush cached filesystem events"),
 			    FLUSH),
 
-		OPT_CMDMODE('t', "is-running", &mode,
-			    N_("test whether the daemon is running"),
-			    IS_RUNNING),
-		OPT_CMDMODE(0, "is-supported", &mode,
-			    N_("determine internal fsmonitor on this platform"),
-			    IS_SUPPORTED),
-
+		OPT_GROUP(N_("Daemon options")),
 		OPT_INTEGER(0, "ipc-threads",
 			    &fsmonitor__ipc_threads,
-			    N_("use <n> ipc threads")),
+			    N_("use <n> ipc worker threads")),
 		OPT_END()
 	};
 
@@ -1190,128 +1260,41 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		die(_("invalid 'ipc-threads' value (%d)"),
 		    fsmonitor__ipc_threads);
 
-	if (mode == IS_SUPPORTED)
-		return !FSMONITOR_DAEMON_IS_SUPPORTED;
-
 #ifndef HAVE_FSMONITOR_DAEMON_BACKEND
 	die(_("internal fsmonitor daemon not supported"));
 #else
 
-	if (mode == QUERY) {
-		/*
-		 * Commands of the form `fsmonitor--daemon --query <token>`
-		 * cause this instance to behave as a CLIENT.  We connect to
-		 * the existing daemon process and ask it for the cached data.
-		 * We start a new daemon process in the background if one is
-		 * not already running.  In both cases, we leave the background
-		 * daemon running after we exit.
-		 *
-		 * This feature is primarily used by the test suite.
-		 *
-		 * <token> is an opaque "fsmonitor V2" token.
-		 */
-		struct strbuf answer = STRBUF_INIT;
-		int ret;
+	switch (mode) {
+	case IS_SUPPORTED:
+		return !FSMONITOR_DAEMON_IS_SUPPORTED;
 
+	case IS_RUNNING:
+		return !is_ipc_daemon_listening();
+
+	case QUERY:
 		if (argc != 1)
 			usage_with_options(builtin_fsmonitor__daemon_usage,
 					   options);
+		return !!do_as_client__query_token(argv[0]);
 
-		ret = fsmonitor__send_ipc_query(argv[0], &answer);
-		if (ret < 0)
-			die(_("could not query fsmonitor daemon"));
+	case QUERY_INDEX:
+		return !!do_as_client__query_from_index();
 
-		write_in_full(1, answer.buf, answer.len);
-		strbuf_release(&answer);
+	case STOP:
+		return !!do_as_client__send_stop();
 
-		return 0;
+	case FLUSH:
+		return !!do_as_client__send_flush();
+
+	case START:
+		return !!try_to_start_background_daemon();
+
+	case RUN:
+		return !!try_to_run_foreground_daemon();
+
+	default:
+		BUG(_("Unhandled command mode %d"), mode);
 	}
-
-	if (mode == QUERY_INDEX) {
-		/*
-		 * Likewise, `fsmonitor--daemon --query-index` commands
-		 * cause this instance to behave as a CLIENT.  We read
-		 * the current index to get the token stored in the on-disk
-		 * fsmonitor extension and request everything that has
-		 * changed since then.
-		 *
-		 * This feature is primarily used by the test suite.
-		 */
-		struct strbuf answer = STRBUF_INIT;
-		struct index_state *istate = the_repository->index;
-		int ret;
-
-		setup_git_directory();
-		if (do_read_index(istate, the_repository->index_file, 0) < 0)
-			die("unable to read index file");
-		if (!istate->fsmonitor_last_update)
-			die("index file does not have fsmonitor extension");
-
-		ret = fsmonitor__send_ipc_query(
-			istate->fsmonitor_last_update, &answer);
-		if (ret < 0)
-			die(_("could not query fsmonitor daemon"));
-
-		write_in_full(1, answer.buf, answer.len);
-		strbuf_release(&answer);
-
-		return 0;
-	}
-
-	if (argc != 0)
-		usage_with_options(builtin_fsmonitor__daemon_usage, options);
-
-	if (mode == IS_RUNNING)
-		return !is_ipc_daemon_listening();
-
-	if (mode == STOP)
-		return !!fsmonitor_daemon__send_stop_command();
-
-	if (mode == FLUSH)
-		return !!fsmonitor_daemon__send_flush_command();
-
-	if (mode == START) {
-		/*
-		 * Before we try to create a background daemon process, see
-		 * if a daemon process is already listening.  This makes it
-		 * easier for us to report an already-listening error to the
-		 * console, since our spawn/daemon can only report the success
-		 * of creating the background process (and not whether it
-		 * immediately exited).
-		 */
-		if (is_ipc_daemon_listening())
-			die("internal fsmonitor daemon is already running.");
-
-#ifdef GIT_WINDOWS_NATIVE
-		/*
-		 * Windows cannot daemonize(); emulate it.
-		 */
-		return !!fsmonitor__spawn_daemon();
-#else
-		/*
-		 * Run the daemon in the process of the child created
-		 * by fork() since only the child returns from daemonize().
-		 */
-		if (daemonize())
-			BUG(_("daemonize() not supported on this platform"));
-		return !!fsmonitor_run_daemon();
-#endif
-	}
-
-	if (mode == RUN) {
-		/*
-		 * Technically, we don't need to probe for an existing daemon
-		 * process, since we could just call `fsmonitor_run_daemon()`
-		 * and let it fail if the pipe/socket is busy.  But this gives
-		 * us a nicer error message.
-		 */
-		if (is_ipc_daemon_listening())
-			die("internal fsmonitor daemon is already running.");
-
-		return !!fsmonitor_run_daemon();
-	}
-
-	BUG(_("Unhandled command mode %d"), mode);
 #endif
 }
 

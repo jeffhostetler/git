@@ -145,7 +145,7 @@ test_expect_success 'cannot start multiple daemons' '
 	git -C test_multiple fsmonitor--daemon --is-running &&
 
 	test_must_fail git -C test_multiple fsmonitor--daemon --start 2>actual &&
-	grep "fsmonitor daemon is already running" actual &&
+	grep "fsmonitor--daemon is already running" actual &&
 
 	git -C test_multiple fsmonitor--daemon --stop &&
 	test_must_fail git -C test_multiple fsmonitor--daemon --is-running

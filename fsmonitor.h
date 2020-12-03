@@ -90,6 +90,14 @@ int fsmonitor__send_ipc_query(const char *since_token,
 			      struct strbuf *answer);
 
 /*
+ * Connect to a `git-fsmonitor--daemon` process via simple-ipc and
+ * send a command verb.  If no daemon is available, we DO NOT try to
+ * start one.
+ */
+int fsmonitor__send_ipc_command(const char *command,
+				struct strbuf *answer);
+
+/*
  * Spawn a new long-running `git-fsmonitor--daemon` process in the
  * background.
  *
@@ -111,6 +119,6 @@ const char *git_path_fsmonitor_ipc(void);
  */
 enum ipc_active_state fsmonitor__get_ipc_state(void);
 
-#endif
+#endif /* HAVE_FSMONITOR_DAEMON_BACKEND */
 
 #endif
