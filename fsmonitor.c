@@ -427,7 +427,7 @@ void tweak_fsmonitor(struct index_state *istate)
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
 #include "simple-ipc.h"
 
-GIT_PATH_FUNC(git_path_fsmonitor, "fsmonitor")
+GIT_PATH_FUNC(git_path_fsmonitor_ipc, "fsmonitor")
 
 int fsmonitor__send_ipc_query(const char *since_token,
 			      struct strbuf *answer)
@@ -448,7 +448,7 @@ int fsmonitor__send_ipc_query(const char *since_token,
 			   since_token);
 
 try_again:
-	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
 
 	switch (state) {
 	case IPC_STATE__LISTENING:
@@ -497,13 +497,13 @@ try_again:
 
 	case IPC_STATE__INVALID_PATH:
 		ret = error(_("query_daemon: invalid path '%s'"),
-			    git_path_fsmonitor());
+			    git_path_fsmonitor_ipc());
 		goto done;
 
 	case IPC_STATE__OTHER_ERROR:
 	default:
 		ret = error(_("query_daemon: unspecified error on '%s'"),
-			    git_path_fsmonitor());
+			    git_path_fsmonitor_ipc());
 		goto done;
 	}
 

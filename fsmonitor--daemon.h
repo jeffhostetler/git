@@ -9,8 +9,6 @@
 #include "simple-ipc.h"
 #include "thread-utils.h"
 
-extern const char *git_path_fsmonitor(void);
-
 struct fsmonitor_batch;
 
 /*

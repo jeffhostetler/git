@@ -95,6 +95,14 @@ int fsmonitor__send_ipc_query(const char *since_token,
  * caller may need to spin until the daemon is ready.
  */
 int fsmonitor__spawn_daemon(void);
+
+/*
+ * Returns the pathname to the IPC named pipe or Unix domain socket
+ * where a `git-fsmonitor--daemon` process will listen.  This is a
+ * per-worktree value.
+ */
+const char *git_path_fsmonitor_ipc(void);
+
 #endif
 
 #endif

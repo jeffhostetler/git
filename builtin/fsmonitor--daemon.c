@@ -47,7 +47,7 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 
 static enum ipc_active_state fsmonitor_daemon_get_active_state(void)
 {
-	return ipc_get_active_state(git_path_fsmonitor());
+	return ipc_get_active_state(git_path_fsmonitor_ipc());
 }
 
 static int fsmonitor_daemon_is_listening(void)
@@ -1000,7 +1000,7 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	 * before we need it.
 	 */
 	if (ipc_server_run_async(&state->ipc_server_data,
-				 git_path_fsmonitor(),
+				 git_path_fsmonitor_ipc(),
 				 fsmonitor__ipc_threads,
 				 handle_client,
 				 state))
@@ -1085,7 +1085,7 @@ static int fsmonitor_daemon__send_stop_command(void)
 	options.wait_if_busy = 1;
 	options.wait_if_not_found = 0;
 
-	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
 	if (state != IPC_STATE__LISTENING) {
 		die("daemon not running");
 		return -1;
@@ -1128,7 +1128,7 @@ static int fsmonitor_daemon__send_flush_command(void)
 	options.wait_if_busy = 1;
 	options.wait_if_not_found = 0;
 
-	state = ipc_client_try_connect(git_path_fsmonitor(), &options, &fd);
+	state = ipc_client_try_connect(git_path_fsmonitor_ipc(), &options, &fd);
 	if (state != IPC_STATE__LISTENING) {
 		die("daemon not running");
 		return -1;
