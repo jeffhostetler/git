@@ -45,14 +45,9 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 	return git_default_config(var, value, cb);
 }
 
-static enum ipc_active_state fsmonitor_daemon_get_active_state(void)
+static int is_ipc_daemon_listening(void)
 {
-	return ipc_get_active_state(git_path_fsmonitor_ipc());
-}
-
-static int fsmonitor_daemon_is_listening(void)
-{
-	return fsmonitor_daemon_get_active_state() == IPC_STATE__LISTENING;
+	return fsmonitor__get_ipc_state() == IPC_STATE__LISTENING;
 }
 
 static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
@@ -1104,7 +1099,7 @@ static int fsmonitor_daemon__send_stop_command(void)
 	// TODO after sending the quit command?
 
 	trace2_region_enter("fsmonitor", "polling-for-daemon-exit", NULL);
-	while (fsmonitor_daemon_get_active_state() == IPC_STATE__LISTENING)
+	while (fsmonitor__get_ipc_state() == IPC_STATE__LISTENING)
 		sleep_millisec(50);
 	trace2_region_leave("fsmonitor", "polling-for-daemon-exit", NULL);
 
@@ -1267,7 +1262,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		usage_with_options(builtin_fsmonitor__daemon_usage, options);
 
 	if (mode == IS_RUNNING)
-		return !fsmonitor_daemon_is_listening();
+		return !is_ipc_daemon_listening();
 
 	if (mode == STOP)
 		return !!fsmonitor_daemon__send_stop_command();
@@ -1284,7 +1279,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		 * of creating the background process (and not whether it
 		 * immediately exited).
 		 */
-		if (fsmonitor_daemon_is_listening())
+		if (is_ipc_daemon_listening())
 			die("internal fsmonitor daemon is already running.");
 
 #ifdef GIT_WINDOWS_NATIVE
@@ -1310,7 +1305,7 @@ int cmd_fsmonitor__daemon(int argc, const char **argv, const char *prefix)
 		 * and let it fail if the pipe/socket is busy.  But this gives
 		 * us a nicer error message.
 		 */
-		if (fsmonitor_daemon_is_listening())
+		if (is_ipc_daemon_listening())
 			die("internal fsmonitor daemon is already running.");
 
 		return !!fsmonitor_run_daemon();

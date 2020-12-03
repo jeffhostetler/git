@@ -76,6 +76,8 @@ static inline void mark_fsmonitor_invalid(struct index_state *istate, struct cac
 }
 
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
+#include "simple-ipc.h"
+
 /*
  * Connect to a `git-fsmonitor--daemon` process via simple-ipc
  * and ask for the set of changed files since the given token.
@@ -102,6 +104,12 @@ int fsmonitor__spawn_daemon(void);
  * per-worktree value.
  */
 const char *git_path_fsmonitor_ipc(void);
+
+/*
+ * Try to determine whether there is a `git-fsmonitor--daemon` process
+ * listening on the IPC pipe/socket.
+ */
+enum ipc_active_state fsmonitor__get_ipc_state(void);
 
 #endif
 

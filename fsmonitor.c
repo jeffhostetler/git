@@ -425,7 +425,6 @@ void tweak_fsmonitor(struct index_state *istate)
 }
 
 #ifdef HAVE_FSMONITOR_DAEMON_BACKEND
-#include "simple-ipc.h"
 
 GIT_PATH_FUNC(git_path_fsmonitor_ipc, "fsmonitor")
 
@@ -552,4 +551,10 @@ int fsmonitor__spawn_daemon(void)
 	return 0;
 #endif
 }
+
+enum ipc_active_state fsmonitor__get_ipc_state(void)
+{
+	return ipc_get_active_state(git_path_fsmonitor_ipc());
+}
+
 #endif
