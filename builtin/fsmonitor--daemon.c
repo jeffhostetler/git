@@ -56,6 +56,10 @@ static int is_ipc_daemon_listening(void)
 	return fsmonitor__get_ipc_state() == IPC_STATE__LISTENING;
 }
 
+#ifdef GIT_WINDOWS_NATIVE
+// TODO I'm in the process of moving us off of cookie files.
+// TODO So far only windows has been converted.
+#else
 static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	struct fsmonitor_daemon_state *state)
 {
@@ -122,6 +126,7 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	free(cookie_path);
 	return cookie.result;
 }
+#endif
 
 /*
  * Mark these cookies as _SEEN and wake up the corresponding client threads.
@@ -540,7 +545,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	kh_str_t *shown;
 	int hash_ret;
 	int result;
-	enum fsmonitor_cookie_item_result cookie_result;
 
 	/*
 	 * We expect `command` to be of the form:
@@ -669,20 +673,27 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	pthread_mutex_unlock(&state->main_lock);
 
+#ifdef GIT_WINDOWS_NATIVE
+	fsmonitor_listen__wait_for_idle(state);
+#else
+	// TODO remove this on other platforms too.
 	/*
 	 * Write a cookie file inside the directory being watched in an
 	 * effort to flush out existing filesystem events that we actually
 	 * care about.  Suspend this client thread until we see the filesystem
 	 * events for this cookie file.
 	 */
-	cookie_result = fsmonitor_wait_for_cookie(state);
-	if (cookie_result != FCIR_SEEN) {
-		error(_("fsmonitor: cookie_result '%d' != SEEN"),
-		      cookie_result);
-		result = 0;
-		goto send_trivial_response;
+	{
+		enum fsmonitor_cookie_item_result cookie_result;
+		cookie_result = fsmonitor_wait_for_cookie(state);
+		if (cookie_result != FCIR_SEEN) {
+			error(_("fsmonitor: cookie_result '%d' != SEEN"),
+			      cookie_result);
+			result = 0;
+			goto send_trivial_response;
+		}
 	}
-
+#endif
 	pthread_mutex_lock(&state->main_lock);
 
 	if (strcmp(requested_token_id.buf,
@@ -922,6 +933,10 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 
 	pthread_mutex_lock(&state->main_lock);
 
+	if (state->debug_wait_count)
+		trace_printf_key(&trace_fsmonitor, "XXX clients waiting %d",
+				 state->debug_wait_count);
+
 	if (batch) {
 		struct fsmonitor_batch *head;
 
@@ -1042,8 +1057,12 @@ static int fsmonitor_run_daemon(void)
 	struct fsmonitor_daemon_state state;
 	int err;
 
+	memset(&state, 0, sizeof(state));
+
 	hashmap_init(&state.cookies, cookies_cmp, NULL, 0);
 	pthread_mutex_init(&state.main_lock, NULL);
+	state.debug_wait_count = 0;
+	pthread_cond_init(&state.wait_for_listener_idle_cond, NULL);
 	pthread_cond_init(&state.cookies_cond, NULL);
 	state.error_code = 0;
 	state.current_token_data = fsmonitor_new_token_data();
@@ -1061,6 +1080,7 @@ static int fsmonitor_run_daemon(void)
 	err = fsmonitor_run_daemon_1(&state);
 
 done:
+	pthread_cond_destroy(&state.wait_for_listener_idle_cond);
 	pthread_cond_destroy(&state.cookies_cond);
 	pthread_mutex_destroy(&state.main_lock);
 	fsmonitor_listen__dtor(&state);
