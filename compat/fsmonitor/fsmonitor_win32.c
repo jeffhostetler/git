@@ -12,6 +12,10 @@ struct fsmonitor_daemon_backend_data
 #define LISTENER_HAVE_DATA 1
 };
 
+#define FSMONITOR_DAEMON_QUIT -2
+
+
+
 /*
  * Convert the WCHAR path from the notification into UTF8 and
  * then normalize it.

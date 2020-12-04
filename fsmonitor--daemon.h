@@ -83,8 +83,6 @@ enum fsmonitor_path_type {
 
 enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
 
-#define FSMONITOR_DAEMON_QUIT -2
-
 /*
  * Prepend the this batch of path(s) onto the list of batches associated
  * with the current token.  This makes the batch visible to worker threads.
