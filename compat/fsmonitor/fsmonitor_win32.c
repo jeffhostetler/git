@@ -12,10 +12,6 @@ struct fsmonitor_daemon_backend_data
 #define LISTENER_HAVE_DATA 1
 };
 
-#define FSMONITOR_DAEMON_QUIT -2
-
-
-
 /*
  * Convert the WCHAR path from the notification into UTF8 and
  * then normalize it.
@@ -99,9 +95,10 @@ static int read_directory_changes_overlapped(
 				   FILE_NOTIFY_CHANGE_SIZE |
 				   FILE_NOTIFY_CHANGE_LAST_WRITE |
 				   FILE_NOTIFY_CHANGE_CREATION,
-				   count, &overlapped, NULL))
-		return error("ReadDirectoryChangedW failed [GLE %ld]",
-			     GetLastError());
+				   count, &overlapped, NULL)) {
+		error("ReadDirectoryChangedW failed [GLE %ld]", GetLastError());
+		return -1;
+	}
 
 	dwWait = WaitForMultipleObjects(
 		ARRAY_SIZE(state->backend_data->hListener),
@@ -109,15 +106,16 @@ static int read_directory_changes_overlapped(
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA &&
 	    GetOverlappedResult(state->backend_data->hDir, &overlapped, count, TRUE))
-		return 0;
+		return LISTENER_HAVE_DATA;
 
 	CancelIoEx(state->backend_data->hDir, &overlapped);
 	GetOverlappedResult(state->backend_data->hDir, &overlapped, count, TRUE);
 
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
-		return FSMONITOR_DAEMON_QUIT;
+		return LISTENER_SHUTDOWN;
 
-	return error("could not read directory changes");
+	error("could not read directory changes [GLE %ld]", GetLastError());
+	return -1;
 }
 
 int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
@@ -190,18 +188,20 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 top:
 	for (;;) {
 		struct fsmonitor_batch *batch = NULL;
+		int r;
 
-		switch (read_directory_changes_overlapped(state,
-							  buffer, sizeof(buffer),
-							  &count)) {
-		case 0: /* we have valid data */
+		r = read_directory_changes_overlapped(state,
+						      buffer, sizeof(buffer),
+						      &count);
+		switch (r) {
+		case LISTENER_HAVE_DATA:
 			break;
 
-		case FSMONITOR_DAEMON_QUIT: /* shutdown event received */
+		case LISTENER_SHUTDOWN:
 			goto shutdown_event;
 
 		default:
-		case -1: /* IO error reading directory events */
+		case -1:
 			goto force_error_stop;
 		}
 
