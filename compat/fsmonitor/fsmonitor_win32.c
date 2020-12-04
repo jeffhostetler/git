@@ -12,31 +12,50 @@ struct fsmonitor_daemon_backend_data
 #define LISTENER_HAVE_DATA 1
 };
 
-//////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////
-
-// TODO Long paths can be 32k WIDE CHARS, but that may expand into more
-// TODO than 32k BYTES if there are any UTF8 multi-byte sequences.
-// TODO But this is rather rare, try it with a fixed buffer size first
-// TODO and if returns 0 and error ERROR_INSUFFICIENT_BUFFER, do the
-// TODO do it again the right way.
-
-static int normalize_path(FILE_NOTIFY_INFORMATION *info, struct strbuf *normalized_path)
+/*
+ * Convert the WCHAR path from the notification into UTF8 and
+ * then normalize it.
+ */
+static int normalize_path_in_utf8(FILE_NOTIFY_INFORMATION *info,
+				  struct strbuf *normalized_path)
 {
-	/* Convert to UTF-8 */
-	int len;
+	int reserve;
+	int len = 0;
 
 	strbuf_reset(normalized_path);
-	strbuf_grow(normalized_path, 32768);
-	len = WideCharToMultiByte(CP_UTF8, 0, info->FileName,
-				  info->FileNameLength / sizeof(WCHAR),
-				  normalized_path->buf, strbuf_avail(normalized_path) - 1, NULL, NULL);
+	if (!info->FileNameLength)
+		goto normalize;
 
-	if (len == 0 || len >= 32768 - 1)
-		return error("could not convert '%.*S' to UTF-8",
-			     (int)(info->FileNameLength / sizeof(WCHAR)),
-			     info->FileName);
+	/*
+	 * Pre-reserve enough space in the UTF8 buffer for
+	 * each Unicode WCHAR character to be mapped into a
+	 * sequence of 2 UTF8 characters.  That should let us
+	 * avoid ERROR_INSUFFICIENT_BUFFER 99.9+% of the time.
+	 */
+	reserve = info->FileNameLength + 1;
+	strbuf_grow(normalized_path, reserve);
 
+	for (;;) {
+		len = WideCharToMultiByte(CP_UTF8, 0, info->FileName,
+					  info->FileNameLength / sizeof(WCHAR),
+					  normalized_path->buf,
+					  strbuf_avail(normalized_path) - 1,
+					  NULL, NULL);
+		if (len > 0)
+			goto normalize;
+		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+			error("[GLE %ld] could not convert path to UTF-8: '%.*S'",
+			      GetLastError(),
+			      (int)(info->FileNameLength / sizeof(WCHAR)),
+			      info->FileName);
+			return -1;
+		}
+
+		strbuf_grow(normalized_path,
+			    strbuf_avail(normalized_path) + reserve);
+	}
+
+normalize:
 	strbuf_setlen(normalized_path, len);
 	return strbuf_normalize_path(normalized_path);
 }
@@ -200,7 +219,8 @@ top:
 			FILE_NOTIFY_INFORMATION *info = (void *)p;
 
 			strbuf_reset(&path);
-			normalize_path(info, &path);
+			if (normalize_path_in_utf8(info, &path) == -1)
+				goto skip_this_path;
 
 			switch (fsmonitor_classify_path(path.buf, path.len)) {
 			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
@@ -241,6 +261,7 @@ top:
 				break;
 			}
 
+skip_this_path:
 			if (!info->NextEntryOffset)
 				break;
 			p += info->NextEntryOffset;
