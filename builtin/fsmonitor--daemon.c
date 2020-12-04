@@ -599,10 +599,11 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		char *p_end;
 
 		strtoumax(command, &p_end, 10);
-		error((*p_end) ?
-		      _("fsmonitor: invalid command line '%s'") :
-		      _("fsmonitor: unsupported V1 protocol '%s'"),
-		      command);
+		trace_printf_key(&trace_fsmonitor,
+				 ((*p_end) ?
+				  "fsmonitor: invalid command line '%s'" :
+				  "fsmonitor: unsupported V1 protocol '%s'"),
+				 command);
 		result = -1;
 		goto send_trivial_response;
 	}
@@ -611,8 +612,9 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	if (fsmonitor_parse_client_token(command, &requested_token_id,
 					 &requested_oldest_seq_nr)) {
-		error(_("fsmonitor: invalid V2 protocol token '%s'"),
-		      command);
+		trace_printf_key(&trace_fsmonitor,
+				 "fsmonitor: invalid V2 protocol token '%s'",
+				 command);
 		result = -1;
 		goto send_trivial_response;
 	}
