@@ -289,13 +289,12 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			if (trace_pass_fl(&trace_fsmonitor))
 				log_flags_set(path, event_flags[i]);
 
-			/* TODO: fsevent could be marked as both a file and directory */
+			/* fsevent could be marked as both a file and directory */
 
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsFile) {
 				if (!batch)
 					batch = fsmonitor_batch__new();
 				fsmonitor_batch__add_path(batch, path);
-				break;
 			}
 
 			if (event_flags[i] & kFSEventStreamEventFlagItemIsDir) {
@@ -306,7 +305,6 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 				fsmonitor_batch__add_path(batch, p);
 
 				free(p);
-				break;
 			}
 
 			break;
