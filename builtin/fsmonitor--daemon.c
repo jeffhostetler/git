@@ -26,11 +26,6 @@ static const char * const builtin_fsmonitor__daemon_usage[] = {
 	NULL
 };
 
-#ifndef HAVE_FSMONITOR_DAEMON_BACKEND
-#define FSMONITOR_DAEMON_IS_SUPPORTED 0
-#else
-#define FSMONITOR_DAEMON_IS_SUPPORTED 1
-
 /*
  * Global state loaded from config.
  */
@@ -50,6 +45,11 @@ static int fsmonitor_config(const char *var, const char *value, void *cb)
 
 	return git_default_config(var, value, cb);
 }
+
+#ifndef HAVE_FSMONITOR_DAEMON_BACKEND
+#define FSMONITOR_DAEMON_IS_SUPPORTED 0
+#else
+#define FSMONITOR_DAEMON_IS_SUPPORTED 1
 
 static int is_ipc_daemon_listening(void)
 {
