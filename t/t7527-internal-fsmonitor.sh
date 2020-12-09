@@ -466,8 +466,6 @@ test_expect_success 'flush cached data' '
 	grep "file_3" actual_q3
 '
 
-test_done
-
 ## TODO To be continued....
 
 # The next few test cases create repos where the .git directory is NOT
