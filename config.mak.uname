@@ -58,7 +58,10 @@ ifeq ($(uname_S),Linux)
 	FREAD_READS_DIRECTORIES = UnfortunatelyYes
 	BASIC_CFLAGS += -DHAVE_SYSINFO
 	PROCFS_EXECUTABLE_PATH = /proc/self/exe
-	FSMONITOR_DAEMON_BACKEND = linux
+#### TODO This is disabled because "inotify" is not sufficient for
+#### TODO large repos, since there's a system-wide limit of about
+#### TODO 8k watched directories.  Replace with "fanotify".
+####	FSMONITOR_DAEMON_BACKEND = linux
 endif
 ifeq ($(uname_S),GNU/kFreeBSD)
 	HAVE_ALLOCA_H = YesPlease
