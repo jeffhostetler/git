@@ -7,10 +7,9 @@ struct fsmonitor_daemon_backend_data
 {
 	HANDLE hDir;
 
-	HANDLE hListener[3];
+	HANDLE hListener[2];
 #define LISTENER_SHUTDOWN 0
 #define LISTENER_HAVE_DATA 1
-#define LISTENER_HAVE_CLIENTS 2
 };
 
 /*
@@ -115,9 +114,6 @@ static int read_directory_changes_overlapped(
 	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
 		return LISTENER_SHUTDOWN;
 
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_CLIENTS)
-		return LISTENER_HAVE_CLIENTS;
-
 	error("could not read directory changes [GLE %ld]", GetLastError());
 	return -1;
 }
@@ -142,7 +138,6 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 
 	data->hListener[LISTENER_SHUTDOWN] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	data->hListener[LISTENER_HAVE_DATA] = CreateEvent(NULL, TRUE, FALSE, NULL);
-	data->hListener[LISTENER_HAVE_CLIENTS] = CreateEvent(NULL, TRUE, FALSE, NULL);
 
 	state->backend_data = data;
 	return 0;
@@ -161,8 +156,6 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 		CloseHandle(data->hListener[LISTENER_SHUTDOWN]);
 	if (data->hListener[LISTENER_HAVE_DATA] != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hListener[LISTENER_HAVE_DATA]);
-	if (data->hListener[LISTENER_HAVE_CLIENTS] != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hListener[LISTENER_HAVE_CLIENTS]);
 
 	if (data->hDir != INVALID_HANDLE_VALUE)
 		CloseHandle(data->hDir);
@@ -206,10 +199,6 @@ top:
 
 		case LISTENER_SHUTDOWN:
 			goto shutdown_event;
-
-		case LISTENER_HAVE_CLIENTS:
-			fsmonitor_listen__signal_idle(state);
-			goto top;
 
 		default:
 		case -1:
@@ -300,26 +289,4 @@ force_shutdown:
 shutdown_event:
 	strbuf_release(&path);
 	return;
-}
-
-void fsmonitor_listen__wait_for_idle(struct fsmonitor_daemon_state *state)
-{
-	trace_printf_key(&trace_fsmonitor, "wait_for_idle enter");
-	pthread_mutex_lock(&state->main_lock);
-	SetEvent(state->backend_data->hListener[LISTENER_HAVE_CLIENTS]);
-	state->debug_wait_count++;
-	pthread_cond_wait(&state->wait_for_listener_idle_cond, &state->main_lock);
-	pthread_mutex_unlock(&state->main_lock);
-	trace_printf_key(&trace_fsmonitor, "wait_for_idle leave");
-}
-
-void fsmonitor_listen__signal_idle(struct fsmonitor_daemon_state *state)
-{
-	trace_printf_key(&trace_fsmonitor, "signal_idle enter");
-	pthread_mutex_lock(&state->main_lock);
-	pthread_cond_broadcast(&state->wait_for_listener_idle_cond);
-	ResetEvent(state->backend_data->hListener[LISTENER_HAVE_CLIENTS]);
-	state->debug_wait_count = 0;
-	pthread_mutex_unlock(&state->main_lock);
-	trace_printf_key(&trace_fsmonitor, "signal_idle leave");
 }

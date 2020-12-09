@@ -62,9 +62,6 @@ struct fsmonitor_daemon_state {
 
 	struct fsmonitor_token_data *current_token_data;
 
-	pthread_cond_t wait_for_listener_idle_cond;
-	int debug_wait_count; // TODO delete me
-
 	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
@@ -142,21 +139,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state);
  * to wait for it.
  */
 void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state);
-
-/*
- * Block the calling thread until the fsmonitor listener thread is
- * idle and there is a gap in the arrival of filesystem events.
- *
- * This will attempt to briefly delay a client query and allow
- * concurrent filesystem events to be processed first.
- */
-void fsmonitor_listen__wait_for_idle(struct fsmonitor_daemon_state *state);
-
-/*
- * Wake any threads waiting for the fsmonitor listener thread to become
- * idle.
- */
-void fsmonitor_listen__signal_idle(struct fsmonitor_daemon_state *state);
 
 #endif /* HAVE_FSMONITOR_DAEMON_BACKEND */
 #endif /* FSMONITOR_DAEMON_H */
