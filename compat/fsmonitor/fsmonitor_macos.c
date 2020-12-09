@@ -206,6 +206,7 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	struct fsmonitor_batch *batch = NULL;
 	struct string_list cookie_list = STRING_LIST_INIT_DUP;
 	const char *path_k;
+	const char *slash;
 	int k;
 
 	/*
@@ -213,6 +214,9 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 	 * list and without holding any locks.
 	 */
 	for (k = 0; k < num_of_events; k++) {
+		/*
+		 * On Mac, we receive an array of absolute paths.
+		 */
 		path_k = paths[k];
 
 		trace_printf_key(&trace_fsmonitor, "XXX '%s'", path_k);
@@ -262,7 +266,13 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 
 		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 			/* special case cookie files within gitdir */
-			string_list_append(&cookie_list, path_k);
+
+			/*
+			 * Use <gitdir> relative path for cookie file.
+			 */
+			slash = find_last_dir_sep(path_k);
+			string_list_append(&cookie_list,
+					   slash ? slash + 1 : path_k);
 			break;
 
 		case IS_INSIDE_DOT_GIT:

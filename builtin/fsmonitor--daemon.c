@@ -62,6 +62,8 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	int fd;
 	struct fsmonitor_cookie_item cookie;
 	struct strbuf cookie_pathname = STRBUF_INIT;
+	struct strbuf cookie_filename = STRBUF_INIT;
+	const char *slash;
 	int my_cookie_seq;
 
 	pthread_mutex_lock(&state->main_lock);
@@ -71,8 +73,14 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	strbuf_addstr(&cookie_pathname, state->path_cookie_prefix.buf);
 	strbuf_addf(&cookie_pathname, "%i-%i", getpid(), my_cookie_seq);
 
-	cookie.name = strbuf_detach(&cookie_pathname, NULL);
+	slash = find_last_dir_sep(cookie_pathname.buf);
+	if (slash)
+		strbuf_addstr(&cookie_filename, slash + 1);
+	else
+		strbuf_addstr(&cookie_filename, cookie_pathname.buf);
+	cookie.name = strbuf_detach(&cookie_filename, NULL);
 	cookie.result = FCIR_INIT;
+	// TODO should we have case-insenstive hash (and in cookie_cmp()) ??
 	hashmap_entry_init(&cookie.entry, strhash(cookie.name));
 
 	/*
@@ -82,14 +90,17 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	 */
 	hashmap_add(&state->cookies, &cookie.entry);
 
+	trace_printf_key(&trace_fsmonitor, "cookie-wait: '%s' '%s'",
+			 cookie.name, cookie_pathname.buf);
+
 	/*
 	 * Create the cookie file on disk and then wait for a notification
 	 * that the listener thread has seen it.
 	 */
-	fd = open(cookie.name, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	fd = open(cookie_pathname.buf, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd >= 0) {
 		close(fd);
-		unlink_or_warn(cookie.name);
+		unlink_or_warn(cookie_pathname.buf);
 
 		while (cookie.result == FCIR_INIT)
 			pthread_cond_wait(&state->cookies_cond,
@@ -107,6 +118,7 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	pthread_mutex_unlock(&state->main_lock);
 
 	free((char*)cookie.name);
+	strbuf_release(&cookie_pathname);
 	return cookie.result;
 }
 
@@ -868,6 +880,27 @@ static int handle_client(void *data, const char *command,
 	return result;
 }
 
+enum fsmonitor_path_type fsmonitor_classify_path_worktree_relative(
+	struct fsmonitor_daemon_state *state,
+	const char *rel)
+{
+	if (fspathncmp(rel, ".git", 4))
+		return IS_WORKTREE_PATH;
+	rel += 4;
+
+	if (!*rel)
+		return IS_DOT_GIT;
+	if (*rel != '/')
+		return IS_WORKTREE_PATH; /* e.g. .gitignore */
+	rel++;
+
+	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
+			strlen(FSMONITOR_COOKIE_PREFIX)))
+		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
+
+	return IS_INSIDE_DOT_GIT;
+}
+
 enum fsmonitor_path_type fsmonitor_classify_path_simple(
 	struct fsmonitor_daemon_state *state,
 	const char *path)
@@ -886,16 +919,13 @@ enum fsmonitor_path_type fsmonitor_classify_path_simple(
 		return IS_OUTSIDE_CONE;
 	rel++;
 
-	if (fspathncmp(rel, ".git", 4))
-		return IS_WORKTREE_PATH;
-	rel += 4;
+	return fsmonitor_classify_path_worktree_relative(state, rel);
+}
 
-	if (!*rel)
-		return IS_DOT_GIT;
-	if (*rel != '/')
-		return IS_WORKTREE_PATH; /* e.g. .gitignore */
-	rel++;
-
+enum fsmonitor_path_type fsmonitor_classify_path_gitdir_relative(
+	struct fsmonitor_daemon_state *state,
+	const char *rel)
+{
 	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
 			strlen(FSMONITOR_COOKIE_PREFIX)))
 		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
@@ -928,11 +958,7 @@ enum fsmonitor_path_type fsmonitor_classify_path_split(
 		return IS_OUTSIDE_CONE;
 	rel++;
 
-	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
-			strlen(FSMONITOR_COOKIE_PREFIX)))
-		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
-
-	return IS_INSIDE_DOT_GIT;
+	return fsmonitor_classify_path_gitdir_relative(state, rel);
 }
 
 static int cookies_cmp(const void *data, const struct hashmap_entry *he1,

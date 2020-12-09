@@ -88,12 +88,27 @@ enum fsmonitor_path_type {
 };
 
 /*
+ * Classify a pathname relative to the root of the working directory.
+ */
+enum fsmonitor_path_type fsmonitor_classify_path_worktree_relative(
+	struct fsmonitor_daemon_state *state,
+	const char *rel);
+
+/*
  * Classify a pathname received from a filesystem event.  Is it part of
  * the worktree, a cookie file, or something else within the .git directory?
  * Use this version when the .git directory is properly inside the working
  * directory.
  */
 enum fsmonitor_path_type fsmonitor_classify_path_simple(
+	struct fsmonitor_daemon_state *state,
+	const char *path);
+
+/*
+ * Classify a pathname relative to a <gitdir> that is external to the
+ * worktree directory.
+ */
+enum fsmonitor_path_type fsmonitor_classify_path_gitdir_relative(
 	struct fsmonitor_daemon_state *state,
 	const char *path);
 
