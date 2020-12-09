@@ -60,8 +60,13 @@ struct fsmonitor_daemon_state {
 	pthread_t listener_thread;
 	pthread_mutex_t main_lock;
 
+	struct strbuf path_worktree_watch;
+	struct strbuf path_gitdir_watch;
+	int nr_paths_watching;
+
 	struct fsmonitor_token_data *current_token_data;
 
+	struct strbuf path_cookie_prefix;
 	pthread_cond_t cookies_cond;
 	int cookie_seq;
 	struct hashmap cookies;
@@ -79,10 +84,27 @@ enum fsmonitor_path_type {
 	IS_DOT_GIT,
 	IS_INSIDE_DOT_GIT,
 	IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX,
-	IS_INVALID,
+	IS_OUTSIDE_CONE,
 };
 
-enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);
+/*
+ * Classify a pathname received from a filesystem event.  Is it part of
+ * the worktree, a cookie file, or something else within the .git directory?
+ * Use this version when the .git directory is properly inside the working
+ * directory.
+ */
+enum fsmonitor_path_type fsmonitor_classify_path_simple(
+	struct fsmonitor_daemon_state *state,
+	const char *path);
+
+/*
+ * Classify a pathname received from a filesystem event.  Use this version
+ * when the .git directory is outside of the working directory, such as a
+ * submodule or non-primary worktree.
+ */
+enum fsmonitor_path_type fsmonitor_classify_path_split(
+	struct fsmonitor_daemon_state *state,
+	const char *path);
 
 /*
  * Prepend the this batch of path(s) onto the list of batches associated

@@ -61,58 +61,35 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 {
 	int fd;
 	struct fsmonitor_cookie_item cookie;
-	char *cookie_path;
-	struct strbuf cookie_filename = STRBUF_INIT;
+	struct strbuf cookie_pathname = STRBUF_INIT;
 	int my_cookie_seq;
 
 	pthread_mutex_lock(&state->main_lock);
 
 	my_cookie_seq = state->cookie_seq++;
 
-	// TODO This assumes that .git is a directory.  We need to
-	// TODO figure out where to put the cookie files when .git
-	// TODO is a link (such as for submodules).  Especially since
-	// TODO the link directory may not be under the cone of the
-	// TODO worktree and thus not registered for notifications.
+	strbuf_addstr(&cookie_pathname, state->path_cookie_prefix.buf);
+	strbuf_addf(&cookie_pathname, "%i-%i", getpid(), my_cookie_seq);
 
-#if 0
-	strbuf_addstr(&cookie_filename, FSMONITOR_COOKIE_PREFIX);
-	strbuf_addf(&cookie_filename, "%i-%i", getpid(), my_cookie_seq);
-#else
-	strbuf_addstr(&cookie_filename, absolute_path(get_git_dir()));
-	strbuf_addch(&cookie_filename, '/');
-	strbuf_addstr(&cookie_filename, FSMONITOR_COOKIE_PREFIX);
-	strbuf_addf(&cookie_filename, "%i-%i", getpid(), my_cookie_seq);
-#endif
-	cookie.name = strbuf_detach(&cookie_filename, NULL);
+	cookie.name = strbuf_detach(&cookie_pathname, NULL);
 	cookie.result = FCIR_INIT;
 	hashmap_entry_init(&cookie.entry, strhash(cookie.name));
 
-	// TODO Putting the address of a stack variable into a global
-	// TODO hashmap feels dodgy.  Granted, the `handle_client()`
-	// TODO stack frame is in a thread that will block on this
-	// TODO returning, but do all coce paths guarantee that it is
-	// TODO removed from the hashmap before this stack frame returns?
-
+	/*
+	 * Warning: we are putting the address of a stack variable into a
+	 * global hashmap.  This feels dodgy.  We must ensure that we remove
+	 * it before this thread and stack frame returns.
+	 */
 	hashmap_add(&state->cookies, &cookie.entry);
 
-#if 0
-	cookie_path = git_pathdup("%s", cookie.name);
-#else
-	cookie_path = strdup(cookie.name);
-#endif
-	fd = open(cookie_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	/*
+	 * Create the cookie file on disk and then wait for a notification
+	 * that the listener thread has seen it.
+	 */
+	fd = open(cookie.name, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd >= 0) {
 		close(fd);
-		unlink_or_warn(cookie_path);
-
-		// TODO We need a way to timeout this loop in case the
-		// TODO listener thread never sees the event for the
-		// TODO cookie file.
-		// TODO
-		// TODO Since we don't have pthread_cond_timedwait() on
-		// TODO Windows, maybe let the listener thread (which is
-		// TODO getting regular events) set a FCIR_TIMEOUT bit...
+		unlink_or_warn(cookie.name);
 
 		while (cookie.result == FCIR_INIT)
 			pthread_cond_wait(&state->cookies_cond,
@@ -121,7 +98,7 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
 	} else {
 		error_errno(_("could not create fsmonitor cookie '%s'"),
-			    cookie_path);
+			    cookie.name);
 
 		cookie.result = FCIR_ERROR;
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
@@ -130,7 +107,6 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	pthread_mutex_unlock(&state->main_lock);
 
 	free((char*)cookie.name);
-	free(cookie_path);
 	return cookie.result;
 }
 
@@ -892,15 +868,68 @@ static int handle_client(void *data, const char *command,
 	return result;
 }
 
-enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len)
+enum fsmonitor_path_type fsmonitor_classify_path_simple(
+	struct fsmonitor_daemon_state *state,
+	const char *path)
 {
-	if (len < 4 || fspathncmp(path, ".git", 4) || (path[4] && path[4] != '/'))
+	const char *rel;
+
+	if (fspathncmp(path, state->path_worktree_watch.buf,
+		       state->path_worktree_watch.len))
+		return IS_OUTSIDE_CONE;
+
+	rel = path + state->path_worktree_watch.len;
+
+	if (!*rel)
+		return IS_WORKTREE_PATH; /* it is the root dir exactly */
+	if (*rel != '/')
+		return IS_OUTSIDE_CONE;
+	rel++;
+
+	if (fspathncmp(rel, ".git", 4))
 		return IS_WORKTREE_PATH;
+	rel += 4;
 
-	if (len == 4 || len == 5)
+	if (!*rel)
 		return IS_DOT_GIT;
+	if (*rel != '/')
+		return IS_WORKTREE_PATH; /* e.g. .gitignore */
+	rel++;
 
-	if (len > 4 && starts_with(path + 5, FSMONITOR_COOKIE_PREFIX))
+	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
+			strlen(FSMONITOR_COOKIE_PREFIX)))
+		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
+
+	return IS_INSIDE_DOT_GIT;
+}
+
+enum fsmonitor_path_type fsmonitor_classify_path_split(
+	struct fsmonitor_daemon_state *state,
+	const char *path)
+{
+	const char *rel;
+	enum fsmonitor_path_type t;
+
+	assert(state->nr_paths_watching == 2);
+
+	t = fsmonitor_classify_path_simple(state, path);
+	if (t != IS_OUTSIDE_CONE)
+		return t;
+
+	if (fspathncmp(path, state->path_gitdir_watch.buf,
+		       state->path_gitdir_watch.len))
+		return IS_OUTSIDE_CONE;
+
+	rel = path + state->path_gitdir_watch.len;
+
+	if (!*rel)
+		return IS_DOT_GIT; /* it is the <gitdir> exactly */
+	if (*rel != '/')
+		return IS_OUTSIDE_CONE;
+	rel++;
+
+	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
+			strlen(FSMONITOR_COOKIE_PREFIX)))
 		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
 
 	return IS_INSIDE_DOT_GIT;
@@ -1064,6 +1093,33 @@ static int fsmonitor_run_daemon(void)
 	state.current_token_data = fsmonitor_new_token_data();
 	state.test_client_delay_ms = lookup_client_test_delay();
 
+	/* Prepare to (recursively) watch the <worktree-root> directory. */
+	strbuf_init(&state.path_worktree_watch, 0);
+	strbuf_addstr(&state.path_worktree_watch, absolute_path(get_git_work_tree()));
+	state.nr_paths_watching = 1;
+
+	/*
+	 * If ".git" is not a directory, then <gitdir> is not inside the
+	 * cone of <worktree-root>, so set up a second watch for it.
+	 */
+	strbuf_init(&state.path_gitdir_watch, 0);
+	strbuf_addstr(&state.path_gitdir_watch, state.path_worktree_watch.buf);
+	strbuf_addstr(&state.path_gitdir_watch, "/.git");
+	if (!is_directory(state.path_gitdir_watch.buf)) {
+		strbuf_reset(&state.path_gitdir_watch);
+		strbuf_addstr(&state.path_gitdir_watch, absolute_path(get_git_dir()));
+		state.nr_paths_watching = 2;
+	}
+
+	/*
+	 * We will write filesystem syncing cookie files into
+	 * <gitdir>/<cookie-prefix><pid>-<seq>.
+	 */
+	strbuf_init(&state.path_cookie_prefix, 0);
+	strbuf_addstr(&state.path_cookie_prefix, state.path_gitdir_watch.buf);
+	strbuf_addch(&state.path_cookie_prefix, '/');
+	strbuf_addstr(&state.path_cookie_prefix, FSMONITOR_COOKIE_PREFIX);
+
 	/*
 	 * Confirm that we can create platform-specific resources for the
 	 * filesystem listener before we bother starting all the threads.
@@ -1081,6 +1137,10 @@ done:
 	fsmonitor_listen__dtor(&state);
 
 	ipc_server_free(state.ipc_server_data);
+
+	strbuf_release(&state.path_worktree_watch);
+	strbuf_release(&state.path_gitdir_watch);
+	strbuf_release(&state.path_cookie_prefix);
 
 	return err;
 }

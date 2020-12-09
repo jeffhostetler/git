@@ -100,14 +100,10 @@ void FSEventStreamRelease(FSEventStreamRef stream);
 
 struct fsmonitor_daemon_backend_data
 {
-	struct strbuf watch_dir;
-	struct strbuf cookie_dir;
-	struct strbuf cookie_prefix;
+	CFStringRef cfsr_worktree_path;
+	CFStringRef cfsr_gitdir_path;
 
-	CFStringRef watch_path;
-	CFStringRef cookie_path;
-
-	CFArrayRef paths_to_watch;
+	CFArrayRef cfar_paths_to_watch;
 	int nr_paths_watching;
 
 	FSEventStreamRef stream;
@@ -197,101 +193,6 @@ static int ef_is_root_renamed(const FSEventStreamEventFlags ef)
 		ef & kFSEventStreamEventFlagItemRenamed);
 }
 
-static enum fsmonitor_path_type macos_classify_path_2(
-	struct fsmonitor_daemon_state *state,
-	const char *path)
-{
-	struct fsmonitor_daemon_backend_data *data = state->backend_data;
-	struct strbuf *root = &data->watch_dir;
-	struct strbuf *gdir = &data->cookie_dir;
-
-	assert(data->nr_paths_watching == 2);
-
-	if (!fspathncmp(path, root->buf, root->len)) {
-		const char *rel = path + root->len;
-
-		if (!*rel)
-			return IS_WORKTREE_PATH;
-		if (*rel != '/')
-			goto invalid; /* peer of <worktree> ? */
-		rel++;
-
-		if (fspathncmp(rel, ".git", 4))
-			return IS_WORKTREE_PATH;
-		rel += 4;
-
-		if (!*rel)
-			return IS_DOT_GIT;
-		if (*rel != '/')
-			return IS_WORKTREE_PATH; /* .gitignore */
-
-		/* we should not get here because we have a gitlink file. */
-		return IS_INSIDE_DOT_GIT;
-	}
-
-	if (!fspathncmp(path, gdir->buf, gdir->len)) {
-		const char *rel = path + gdir->len;
-
-		if (!*rel)
-			return IS_DOT_GIT;
-		if (*rel != '/')
-			goto invalid; /* peer of <gitdir> ? */
-		rel++;
-
-		if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
-				strlen(FSMONITOR_COOKIE_PREFIX)))
-			return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
-
-		return IS_INSIDE_DOT_GIT;
-	}
-
-invalid:
-	trace_printf_key(&trace_fsmonitor, "YYY2: invalid '%s'", path);
-	return IS_INVALID;
-}
-
-static enum fsmonitor_path_type macos_classify_path_1(
-	struct fsmonitor_daemon_state *state,
-	const char *path)
-{
-	struct fsmonitor_daemon_backend_data *data = state->backend_data;
-	struct strbuf *root = &data->watch_dir;
-	const char *rel;
-
-	assert(data->nr_paths_watching == 1);
-
-	if (fspathncmp(path, root->buf, root->len))
-		goto invalid; /* peer of <worktree> ? */
-
-	rel = path + root->len;
-
-	if (!*rel)
-		return IS_WORKTREE_PATH;
-	if (*rel != '/')
-		goto invalid; /* peer of <worktree> ? */
-	rel++;
-
-	if (fspathncmp(rel, ".git", 4))
-		return IS_WORKTREE_PATH;
-	rel += 4;
-
-	if (!*rel)
-		return IS_DOT_GIT;
-	if (*rel != '/')
-		return IS_WORKTREE_PATH; /* .gitignore */
-	rel++;
-
-	if (!fspathncmp(rel, FSMONITOR_COOKIE_PREFIX,
-			strlen(FSMONITOR_COOKIE_PREFIX)))
-		return IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX;
-
-	return IS_INSIDE_DOT_GIT;
-
-invalid:
-	trace_printf_key(&trace_fsmonitor, "YYY1: invalid '%s'", path);
-	return IS_INVALID;
-}
-
 static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			     void *ctx,
 			     size_t num_of_events,
@@ -355,9 +256,9 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			continue;
 		}
 
-		switch (data->nr_paths_watching == 2 ?
-			macos_classify_path_2(state, path_k) :
-			macos_classify_path_1(state, path_k)) {
+		switch (state->nr_paths_watching == 2 ?
+			fsmonitor_classify_path_split(state, path_k) :
+			fsmonitor_classify_path_simple(state, path_k)) {
 
 		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
 			/* special case cookie files within gitdir */
@@ -388,7 +289,6 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			break;
 
 		case IS_WORKTREE_PATH:
-		default:
 			/* try to queue normal pathnames */
 
 			if (trace_pass_fl(&trace_fsmonitor))
@@ -397,7 +297,8 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			/* fsevent could be marked as both a file and directory */
 
 			if (event_flags[k] & kFSEventStreamEventFlagItemIsFile) {
-				const char *rel = path_k + data->watch_dir.len + 1;
+				const char *rel = path_k +
+					state->path_worktree_watch.len + 1;
 
 				if (!batch)
 					batch = fsmonitor_batch__new();
@@ -405,7 +306,8 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			}
 
 			if (event_flags[k] & kFSEventStreamEventFlagItemIsDir) {
-				const char *rel = path_k + data->watch_dir.len + 1;
+				const char *rel = path_k +
+					state->path_worktree_watch.len + 1;
 				char *p = xstrfmt("%s/", rel);
 
 				if (!batch)
@@ -415,6 +317,12 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 				free(p);
 			}
 
+			break;
+
+		case IS_OUTSIDE_CONE:
+		default:
+			trace_printf_key(&trace_fsmonitor,
+					 "ignoring '%s'", path_k);
 			break;
 		}
 	}
@@ -456,44 +364,26 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 	data = xcalloc(1, sizeof(*data));
 	state->backend_data = data;
 
-	/*
-	 * Watch <worktree-root> directory (recursively).
-	 */
-	strbuf_init(&data->watch_dir, 0);
-	strbuf_addstr(&data->watch_dir, absolute_path(get_git_work_tree()));
-	data->watch_path = CFStringCreateWithCString(
-		NULL, data->watch_dir.buf, kCFStringEncodingUTF8);
-	dir_array[data->nr_paths_watching++] = data->watch_path;
+	data->cfsr_worktree_path = CFStringCreateWithCString(
+		NULL, state->path_worktree_watch.buf, kCFStringEncodingUTF8);
+	dir_array[data->nr_paths_watching++] = data->cfsr_worktree_path;
 
-	/*
-	 * Also watch the .git directory if we have a gitdir link such as
-	 * for a submodule or a non-primary worktree.
-	 */
-	strbuf_init(&data->cookie_dir, 0);
-	strbuf_addstr(&data->cookie_dir, data->watch_dir.buf);
-	strbuf_addstr(&data->cookie_dir, "/.git");
-	if (!is_directory(data->cookie_dir.buf)) {
-		strbuf_reset(&data->cookie_dir);
-		strbuf_addstr(&data->cookie_dir, absolute_path(get_git_dir()));
-		data->cookie_path = CFStringCreateWithCString(
-			NULL, data->cookie_dir.buf, kCFStringEncodingUTF8);
-		dir_array[data->nr_paths_watching++] = data->cookie_path;
+	if (state->nr_paths_watching > 1) {
+		data->cfsr_gitdir_path = CFStringCreateWithCString(
+			NULL, state->path_gitdir_watch.buf,
+			kCFStringEncodingUTF8);
+		dir_array[data->nr_paths_watching++] = data->cfsr_gitdir_path;
 	}
 
-	data->paths_to_watch = CFArrayCreate(NULL,
-					     dir_array, data->nr_paths_watching,
-					     NULL);
+	data->cfar_paths_to_watch = CFArrayCreate(NULL, dir_array,
+						  data->nr_paths_watching,
+						  NULL);
 	data->stream = FSEventStreamCreate(NULL, fsevent_callback, &ctx,
-					   data->paths_to_watch,
+					   data->cfar_paths_to_watch,
 					   kFSEventStreamEventIdSinceNow,
 					   0.1, flags);
 	if (data->stream == NULL)
 		goto failed;
-
-	strbuf_init(&data->cookie_prefix, 0);
-	strbuf_addstr(&data->cookie_prefix, data->cookie_dir.buf);
-	strbuf_addch(&data->cookie_prefix, '/');
-	strbuf_addstr(&data->cookie_prefix, FSMONITOR_COOKIE_PREFIX);
 
 	/*
 	 * `data->rl` needs to be set inside the listener thread.
@@ -503,10 +393,9 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 
 failed:
 	error("Unable to create FSEventStream.");
-	strbuf_release(&data->watch_dir);
-	strbuf_release(&data->cookie_dir);
-	strbuf_release(&data->cookie_prefix);
+
 	// TODO destroy data->{watch_path,cookie_path,paths_to_watch} ??
+
 	FREE_AND_NULL(state->backend_data);
 	return -1;
 }
@@ -520,9 +409,6 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 
 	data = state->backend_data;
 
-	strbuf_release(&data->watch_dir);
-	strbuf_release(&data->cookie_dir);
-	strbuf_release(&data->cookie_prefix);
 	// TODO destroy data->{watch_path,cookie_path,paths_to_watch} ??
 
 	if (data->stream) {
@@ -551,7 +437,10 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	data = state->backend_data;
 
 	trace_printf_key(&trace_fsmonitor, "Watching: '%s' for fsevents",
-			 data->watch_dir.buf);
+			 state->path_worktree_watch.buf);
+	if (state->nr_paths_watching > 1)
+		trace_printf_key(&trace_fsmonitor, "Watching: '%s' for fsevents",
+				 state->path_gitdir_watch.buf);
 
 	data->rl = CFRunLoopGetCurrent();
 
