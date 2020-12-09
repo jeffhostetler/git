@@ -124,7 +124,7 @@ static int read_directory_changes_overlapped(
 	if (state->nr_paths_watching > 1) {
 		memset(&overlapped_gitdir, 0, sizeof(overlapped_gitdir));
 		ResetEvent(state->backend_data->hListener[LISTENER_HAVE_DATA_GITDIR]);
-		overlapped_worktree.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA_WORKTREE];
+		overlapped_gitdir.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA_GITDIR];
 
 		if (!ReadDirectoryChangesW(state->backend_data->hDirGitDir,
 					   state->backend_data->buffer_gitdir,
