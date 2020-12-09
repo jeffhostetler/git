@@ -467,3 +467,27 @@ test_expect_success 'flush cached data' '
 '
 
 test_done
+
+## TODO To be continued....
+
+# The next few test cases create repos where the .git directory is NOT
+# inside the one of the working directory.  That is, where .git is a file
+# that points to a directory elsewhere.  This happens for submodules and
+# non-primary worktrees.
+
+test_expect_success 'setup worktree base' '
+	git init wt-base &&
+	echo 1 >wt-base/file1 &&
+	git -C wt-base add file1 &&
+	git -C wt-base commit -m "c1"
+'
+
+test_expect_success 'worktree with .git file' '
+	git -C wt-base worktree add ../wt-secondary &&
+	start_daemon wt-secondary &&
+	git -C wt-secondary fsmonitor--daemon --is-running &&
+	git -C wt-secondary fsmonitor--daemon --stop &&
+	test_must_fail git -C wt-secondary fsmonitor--daemon --is-running
+'
+
+test_done
