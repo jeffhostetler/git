@@ -142,6 +142,8 @@ static void fsmonitor_cookie_mark_seen(struct fsmonitor_daemon_state *state,
 
 		cookie = hashmap_get_entry(&state->cookies, &key, entry, NULL);
 		if (cookie) {
+			trace_printf_key(&trace_fsmonitor, "cookie-seen: '%s'",
+					 cookie->name);
 			cookie->result = FCIR_SEEN;
 			nr_seen++;
 		}
@@ -163,6 +165,8 @@ static void fsmonitor_cookie_abort_all(struct fsmonitor_daemon_state *state)
 	int nr_aborted = 0;
 
 	hashmap_for_each_entry(&state->cookies, &iter, cookie, entry) {
+		trace_printf_key(&trace_fsmonitor, "cookie-abort: '%s'",
+				 cookie->name);
 		cookie->result = FCIR_ABORT;
 		nr_aborted++;
 	}
