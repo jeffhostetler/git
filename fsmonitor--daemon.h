@@ -52,7 +52,7 @@ struct fsmonitor_cookie_item {
 	enum fsmonitor_cookie_item_result result;
 };
 
-#define FSMONITOR_COOKIE_PREFIX ".watchman-cookie-git-"
+#define FSMONITOR_COOKIE_PREFIX ".fsmonitor-daemon-"
 
 struct fsmonitor_daemon_backend_data; /* opaque platform-specific data */
 
@@ -82,6 +82,7 @@ enum fsmonitor_path_type {
 	IS_DOT_GIT,
 	IS_INSIDE_DOT_GIT,
 	IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX,
+	IS_INVALID,
 };
 
 enum fsmonitor_path_type fsmonitor_classify_path(const char *path, size_t len);

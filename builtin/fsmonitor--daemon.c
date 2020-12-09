@@ -79,8 +79,15 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	// TODO the link directory may not be under the cone of the
 	// TODO worktree and thus not registered for notifications.
 
+#if 0
 	strbuf_addstr(&cookie_filename, FSMONITOR_COOKIE_PREFIX);
 	strbuf_addf(&cookie_filename, "%i-%i", getpid(), my_cookie_seq);
+#else
+	strbuf_addstr(&cookie_filename, absolute_path(get_git_dir()));
+	strbuf_addch(&cookie_filename, '/');
+	strbuf_addstr(&cookie_filename, FSMONITOR_COOKIE_PREFIX);
+	strbuf_addf(&cookie_filename, "%i-%i", getpid(), my_cookie_seq);
+#endif
 	cookie.name = strbuf_detach(&cookie_filename, NULL);
 	cookie.result = FCIR_INIT;
 	hashmap_entry_init(&cookie.entry, strhash(cookie.name));
@@ -93,7 +100,11 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 
 	hashmap_add(&state->cookies, &cookie.entry);
 
+#if 0
 	cookie_path = git_pathdup("%s", cookie.name);
+#else
+	cookie_path = strdup(cookie.name);
+#endif
 	fd = open(cookie_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd >= 0) {
 		close(fd);
