@@ -9,7 +9,6 @@ struct one_watch
 	HANDLE hDir;
 	HANDLE hEvent;
 	OVERLAPPED overlapped;
-	int listener_nr;
 
 	// TODO Investigate the best buffer size.
 	// TODO
@@ -102,11 +101,8 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	SetEvent(state->backend_data->hListener[LISTENER_SHUTDOWN]);
 }
 
-////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////
-
 static struct one_watch *create_watch(struct fsmonitor_daemon_state *state,
-				      const char *path, int listener_nr)
+				      const char *path)
 {
 	struct one_watch *watch = NULL;
 	DWORD desired_access = FILE_LIST_DIRECTORY;
@@ -130,12 +126,8 @@ static struct one_watch *create_watch(struct fsmonitor_daemon_state *state,
 	strbuf_addstr(&watch->path, path);
 
 	watch->hDir = hDir;
-	watch->listener_nr = listener_nr;
-
 	watch->hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-#if 1
-	watch->overlapped.hEvent = watch->hEvent;
-#endif
+
 	return watch;
 }
 
@@ -143,6 +135,7 @@ static void destroy_watch(struct one_watch *watch)
 {
 	if (!watch)
 		return;
+
 	strbuf_release(&watch->path);
 	if (watch->hDir != INVALID_HANDLE_VALUE)
 		CloseHandle(watch->hDir);
@@ -155,11 +148,10 @@ static void destroy_watch(struct one_watch *watch)
 static int start_rdcw_watch(struct fsmonitor_daemon_backend_data *data,
 			    struct one_watch *watch)
 {
+	ResetEvent(watch->hEvent);
+
 	memset(&watch->overlapped, 0, sizeof(watch->overlapped));
-#if 1
-	ResetEvent(data->hListener[watch->listener_nr]);
-	watch->overlapped.hEvent = data->hListener[watch->listener_nr];
-#endif
+	watch->overlapped.hEvent = watch->hEvent;
 
 	watch->is_active = ReadDirectoryChangesW(
 		watch->hDir, watch->buffer, sizeof(watch->buffer), TRUE,
@@ -187,6 +179,12 @@ static int recv_rdcw_watch(struct one_watch *watch)
 				TRUE))
 		return 0;
 
+	// TODO If an external <gitdir> is deleted, the above returns an error.
+	// TODO I'm not sure that there's anything that we can do here other
+	// TODO than failing -- the <worktree>/.git link file would be broken
+	// TODO anyway.  We might try to check for that and return a better
+	// TODO error message.
+
 	error("GetOverlappedResult failed on '%s' [GLE %ld]",
 	      watch->path.buf, GetLastError());
 	return -1;
@@ -204,6 +202,14 @@ static void cancel_rdcw_watch(struct one_watch *watch)
 	watch->is_active = FALSE;
 }
 
+/*
+ * Process filesystem events that happen anywhere (recursively) under the
+ * <worktree> root directory.  For a normal working directory, this includes
+ * both version controlled files and the contents of the .git/ directory.
+ *
+ * If <worktree>/.git is a file, then we only see events for the file
+ * itself.
+ */
 static int process_worktree_events(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
@@ -253,11 +259,11 @@ static int process_worktree_events(struct fsmonitor_daemon_state *state)
 			break;
 
 		case IS_INSIDE_DOT_GIT:
-			/* ignore all other paths inside of .git/ */
+			/* ignore everything inside of "<worktree>/.git/" */
 			break;
 
 		case IS_DOT_GIT:
-			/* .git directory deleted (or renamed away) */
+			/* "<worktree>/.git" was deleted (or renamed away) */
 			if ((info->Action == FILE_ACTION_REMOVED) ||
 			    (info->Action == FILE_ACTION_RENAMED_OLD_NAME)) {
 				trace2_data_string("fsmonitor", NULL,
@@ -276,7 +282,7 @@ static int process_worktree_events(struct fsmonitor_daemon_state *state)
 			break;
 		}
 
-	skip_this_path:
+skip_this_path:
 		if (!info->NextEntryOffset)
 			break;
 		p += info->NextEntryOffset;
@@ -295,6 +301,15 @@ force_shutdown:
 	return LISTENER_SHUTDOWN;
 }
 
+/*
+ * Process filesystem events that happend anywhere (recursively) under the
+ * external <gitdir> (such as non-primary worktrees or submodules).
+ * We only care about cookie files that our client threads created here.
+ *
+ * Note that we DO NOT get filesystem events on the external <gitdir>
+ * itself (it is not inside something that we are watching).  In particular,
+ * we do not get an event if the external <gitdir> is deleted.
+ */
 static int process_gitdir_events(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data = state->backend_data;
@@ -337,7 +352,7 @@ static int process_gitdir_events(struct fsmonitor_daemon_state *state)
 			break;
 		}
 
-	skip_this_path:
+skip_this_path:
 		if (!info->NextEntryOffset)
 			break;
 		p += info->NextEntryOffset;
@@ -347,12 +362,6 @@ static int process_gitdir_events(struct fsmonitor_daemon_state *state)
 	string_list_clear(&cookie_list, 0);
 	strbuf_release(&path);
 	return LISTENER_HAVE_DATA_GITDIR;
-#if 0
-force_shutdown:
-	string_list_clear(&cookie_list, 0);
-	strbuf_release(&path);
-	return LISTENER_SHUTDOWN;
-#endif
 }
 
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
@@ -373,8 +382,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 		dwWait = WaitForMultipleObjects(data->nr_listener_handles,
 						data->hListener,
 						FALSE, INFINITE);
-		trace_printf_key(&trace_fsmonitor,
-				 "AAA: dwWait %d", (int)dwWait);
 
 		if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA_WORKTREE) {
 			if (recv_rdcw_watch(data->watch_worktree) == -1)
@@ -420,120 +427,6 @@ clean_shutdown:
 	cancel_rdcw_watch(data->watch_gitdir);
 }
 
-////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////
-#if 0
-/*
- * Use OVERLAPPED IO to call ReadDirectoryChangesW() so that we can
- * wait for IO and/or a shutdown event.
- *
- * Returns 0 if successful.
- * Returns -1 on error.
- * Returns FSMONITOR_DAEMON_QUIT if shutdown signaled.
- */
-static int read_directory_changes_overlapped(
-	struct fsmonitor_daemon_state *state,
-	DWORD *count)
-{
-	OVERLAPPED overlapped_worktree;
-	OVERLAPPED overlapped_gitdir;
-	DWORD dwWait;
-	BOOL bWorktreeQueued = FALSE;
-	BOOL bGitDirQueued = FALSE;
-	int result = -1;
-
-	memset(&overlapped_worktree, 0, sizeof(overlapped_worktree));
-	ResetEvent(state->backend_data->hListener[LISTENER_HAVE_DATA_WORKTREE]);
-	overlapped_worktree.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA_WORKTREE];
-
-	if (!ReadDirectoryChangesW(state->backend_data->hDirWorktree,
-				   state->backend_data->buffer_worktree,
-				   sizeof(state->backend_data->buffer_worktree),
-				   TRUE,
-				   FILE_NOTIFY_CHANGE_FILE_NAME |
-				   FILE_NOTIFY_CHANGE_DIR_NAME |
-				   FILE_NOTIFY_CHANGE_ATTRIBUTES |
-				   FILE_NOTIFY_CHANGE_SIZE |
-				   FILE_NOTIFY_CHANGE_LAST_WRITE |
-				   FILE_NOTIFY_CHANGE_CREATION,
-				   count, &overlapped_worktree, NULL)) {
-		error("ReadDirectoryChangedW failed on '%s' [GLE %ld]",
-		      state->path_worktree_watch.buf, GetLastError());
-		goto cleanup;
-	}
-	bWorktreeQueued = TRUE;
-
-	if (state->nr_paths_watching > 1) {
-		memset(&overlapped_gitdir, 0, sizeof(overlapped_gitdir));
-		ResetEvent(state->backend_data->hListener[LISTENER_HAVE_DATA_GITDIR]);
-		overlapped_gitdir.hEvent = state->backend_data->hListener[LISTENER_HAVE_DATA_GITDIR];
-
-		if (!ReadDirectoryChangesW(state->backend_data->hDirGitDir,
-					   state->backend_data->buffer_gitdir,
-					   sizeof(state->backend_data->buffer_gitdir),
-					   TRUE,
-					   FILE_NOTIFY_CHANGE_FILE_NAME |
-					   FILE_NOTIFY_CHANGE_DIR_NAME |
-					   FILE_NOTIFY_CHANGE_ATTRIBUTES |
-					   FILE_NOTIFY_CHANGE_SIZE |
-					   FILE_NOTIFY_CHANGE_LAST_WRITE |
-					   FILE_NOTIFY_CHANGE_CREATION,
-					   count, &overlapped_gitdir, NULL)) {
-			error("ReadDirectoryChangedW failed on '%s' [GLE %ld]",
-			      state->path_gitdir_watch.buf, GetLastError());
-			goto cleanup;
-		}
-		bGitDirQueued = TRUE;
-	}
-
-	dwWait = WaitForMultipleObjects(1 + /* _SHUTDOWN */
-					state->nr_paths_watching,
-					state->backend_data->hListener,
-					FALSE, INFINITE);
-
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA_WORKTREE) {
-		if (GetOverlappedResult(state->backend_data->hDirWorktree,
-					&overlapped_worktree, count, TRUE))
-			result = LISTENER_HAVE_DATA_WORKTREE;
-		goto cleanup;
-	}
-
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA_GITDIR) {
-		if (GetOverlappedResult(state->backend_data->hDirGitDir,
-					&overlapped_gitdir, count, TRUE))
-			result = LISTENER_HAVE_DATA_GITDIR;
-		goto cleanup;
-	}
-
-	if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN) {
-		result = LISTENER_SHUTDOWN;
-		goto cleanup;
-	}
-
-	error("could not read directory changes [GLE %ld]", GetLastError());
-	return -1;
-
-cleanup:
-	if (bWorktreeQueued && result != LISTENER_HAVE_DATA_WORKTREE) {
-		DWORD unused;
-		CancelIoEx(state->backend_data->hDirWorktree,
-			   &overlapped_worktree);
-		GetOverlappedResult(state->backend_data->hDirWorktree,
-				    &overlapped_worktree, &unused, TRUE);
-	}
-
-	if (bGitDirQueued && result != LISTENER_HAVE_DATA_GITDIR) {
-		DWORD unused;
-		CancelIoEx(state->backend_data->hDirGitDir,
-			   &overlapped_gitdir);
-		GetOverlappedResult(state->backend_data->hDirGitDir,
-				    &overlapped_gitdir, &unused, TRUE);
-	}
-
-	return result;
-}
-#endif
-
 int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data;
@@ -543,15 +436,13 @@ int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 	data->hEventShutdown = CreateEvent(NULL, TRUE, FALSE, NULL);
 
 	data->watch_worktree = create_watch(state,
-					    state->path_worktree_watch.buf,
-					    LISTENER_HAVE_DATA_WORKTREE);
+					    state->path_worktree_watch.buf);
 	if (!data->watch_worktree)
 		goto failed;
 
 	if (state->nr_paths_watching > 1) {
 		data->watch_gitdir = create_watch(state,
-						  state->path_gitdir_watch.buf,
-						  LISTENER_HAVE_DATA_GITDIR);
+						  state->path_gitdir_watch.buf);
 		if (!data->watch_gitdir)
 			goto failed;
 	}
@@ -595,142 +486,3 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 
 	FREE_AND_NULL(state->backend_data);
 }
-
-// TODO RDCW() has a note in [1] WRT short-names.  We should understand
-// TODO what it means.
-// TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
-#if 0
-void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
-{
-
-	struct strbuf path = STRBUF_INIT;
-	struct string_list cookie_list = STRING_LIST_INIT_DUP;
-
-top:
-	for (;;) {
-		struct fsmonitor_batch *batch = NULL;
-		DWORD count = 0;
-		const char *p;
-		int r;
-
-		r = read_directory_changes_overlapped(state, &count);
-		switch (r) {
-		case LISTENER_HAVE_DATA_WORKTREE:
-			p = state->backend_data->buffer_worktree;
-			break;
-
-		case LISTENER_HAVE_DATA_GITDIR:
-			p = state->backend_data->buffer_gitdir;
-			break;
-
-		case LISTENER_SHUTDOWN:
-			goto shutdown_event;
-
-		default:
-		case -1:
-			goto force_error_stop;
-		}
-
-		/*
-		 * If the kernel gets more events than will fit in the kernel
-		 * buffer associated with our RDCW handle, it drops them and
-		 * returns a count of zero.  (A successful call, but with
-		 * length zero.)
-		 */
-		if (!count) {
-			trace2_data_string("fsmonitor", NULL, "fsm-listen/kernel",
-					   "overflow");
-			fsmonitor_force_resync(state);
-			goto top;
-		}
-
-		for (;;) {
-			FILE_NOTIFY_INFORMATION *info = (void *)p;
-			const char *slash;
-			enum fsmonitor_path_type t;
-
-			/*
-			 * On Windows, `info` contains an "array" of paths
-			 * that are relative to the root of whichever
-			 * directory handle received the event.
-			 */
-			strbuf_reset(&path);
-			if (normalize_path_in_utf8(info, &path) == -1)
-				goto skip_this_path;
-
-			if (state->nr_paths_watching == 1)
-				t = fsmonitor_classify_path_worktree_relative(
-					state, path.buf);
-			else if (r == LISTENER_HAVE_DATA_WORKTREE)
-				t = fsmonitor_classify_path_worktree_relative(
-					state, path.buf);
-			else
-				t = fsmonitor_classify_path_gitdir_relative(
-					state, path.buf);
-
-			switch (t) {
-
-			case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
-				/* special case cookie files within gitdir */
-
-				/*
-				 * Use <gitdir> relative path for cookie file.
-				 */
-				slash = find_last_dir_sep(path.buf);
-				string_list_append(&cookie_list,
-						   slash ? slash + 1 : path.buf);
-				break;
-
-			case IS_INSIDE_DOT_GIT:
-				/* ignore all other paths inside of .git/ */
-				break;
-
-			case IS_DOT_GIT:
-				/* .git directory deleted (or renamed away) */
-				if ((info->Action == FILE_ACTION_REMOVED) ||
-				    (info->Action == FILE_ACTION_RENAMED_OLD_NAME)) {
-					trace2_data_string("fsmonitor", NULL,
-							   "fsm-listen/dotgit",
-							   "removed");
-
-					if (fsmonitor_batch__free(batch))
-						BUG("batch should not have a next");
-					goto force_shutdown;
-				}
-				break;
-
-			case IS_WORKTREE_PATH:
-			default:
-				/* queue normal pathname */
-				if (!batch)
-					batch = fsmonitor_batch__new();
-				fsmonitor_batch__add_path(batch, path.buf);
-				break;
-			}
-
-skip_this_path:
-			if (!info->NextEntryOffset)
-				break;
-			p += info->NextEntryOffset;
-		}
-
-		fsmonitor_publish(state, batch, &cookie_list);
-		string_list_clear(&cookie_list, 0);
-	}
-
-force_error_stop:
-	state->error_code = -1;
-
-force_shutdown:
-	/*
-	 * Tell the IPC thead pool to stop (which completes the await
-	 * in the main thread (which will also signal this thread (if
-	 * we are still alive))).
-	 */
-	ipc_server_stop_async(state->ipc_server_data);
-
-shutdown_event:
-	strbuf_release(&path);
-	return;
-}
-#endif
