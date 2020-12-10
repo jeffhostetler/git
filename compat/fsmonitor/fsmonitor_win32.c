@@ -3,15 +3,13 @@
 #include "fsmonitor.h"
 #include "fsmonitor--daemon.h"
 
-struct fsmonitor_daemon_backend_data
+struct one_watch
 {
-	HANDLE hDirWorktree;
-	HANDLE hDirGitDir;
-
-	HANDLE hListener[3];
-#define LISTENER_SHUTDOWN 0
-#define LISTENER_HAVE_DATA_WORKTREE 1
-#define LISTENER_HAVE_DATA_GITDIR 2
+	struct strbuf path;
+	HANDLE hDir;
+	HANDLE hEvent;
+	OVERLAPPED overlapped;
+	int listener_nr;
 
 	// TODO Investigate the best buffer size.
 	// TODO
@@ -24,8 +22,31 @@ struct fsmonitor_daemon_backend_data
 	// TODO For very heavy IO loads with deeply nested pathnames, we might
 	// TODO need a larger buffer.
 	//
-	char buffer_worktree[65536 * sizeof(wchar_t)];
-	char buffer_gitdir[65536 * sizeof(wchar_t)];
+	// TODO Should we have 2 buffers and alternate them so that we can
+	// TODO start another overlapped IO while processing the last one?
+	//
+	char buffer[65536 * sizeof(wchar_t)];
+	DWORD count;
+
+	/*
+	 * Is there an active ReadDirectoryChangesW() call pending.  If so, we
+	 * need to later call GetOverlappedResult() and possibly CancelIoEx().
+	 */
+	BOOL is_active;
+};
+
+struct fsmonitor_daemon_backend_data
+{
+	struct one_watch *watch_worktree;
+	struct one_watch *watch_gitdir;
+
+	HANDLE hEventShutdown;
+
+	HANDLE hListener[3]; /* we don't own these handles */
+#define LISTENER_SHUTDOWN 0
+#define LISTENER_HAVE_DATA_WORKTREE 1
+#define LISTENER_HAVE_DATA_GITDIR 2
+	int nr_listener_handles;
 };
 
 /*
@@ -81,6 +102,327 @@ void fsmonitor_listen__stop_async(struct fsmonitor_daemon_state *state)
 	SetEvent(state->backend_data->hListener[LISTENER_SHUTDOWN]);
 }
 
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+static struct one_watch *create_watch(struct fsmonitor_daemon_state *state,
+				      const char *path, int listener_nr)
+{
+	struct one_watch *watch = NULL;
+	DWORD desired_access = FILE_LIST_DIRECTORY;
+	DWORD share_mode =
+		FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE;
+	HANDLE hDir;
+
+	hDir = CreateFileA(path,
+			   desired_access, share_mode, NULL, OPEN_EXISTING,
+			   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+			   NULL);
+	if (hDir == INVALID_HANDLE_VALUE) {
+		error(_("[GLE %ld] could not watch '%s'"),
+		      GetLastError(), path);
+		return NULL;
+	}
+
+	watch = xcalloc(1, sizeof(*watch));
+
+	strbuf_init(&watch->path, 0);
+	strbuf_addstr(&watch->path, path);
+
+	watch->hDir = hDir;
+	watch->listener_nr = listener_nr;
+
+	watch->hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+#if 1
+	watch->overlapped.hEvent = watch->hEvent;
+#endif
+	return watch;
+}
+
+static void destroy_watch(struct one_watch *watch)
+{
+	if (!watch)
+		return;
+	strbuf_release(&watch->path);
+	if (watch->hDir != INVALID_HANDLE_VALUE)
+		CloseHandle(watch->hDir);
+	if (watch->hEvent != INVALID_HANDLE_VALUE)
+		CloseHandle(watch->hEvent);
+
+	free(watch);
+}
+
+static int start_rdcw_watch(struct fsmonitor_daemon_backend_data *data,
+			    struct one_watch *watch)
+{
+	memset(&watch->overlapped, 0, sizeof(watch->overlapped));
+#if 1
+	ResetEvent(data->hListener[watch->listener_nr]);
+	watch->overlapped.hEvent = data->hListener[watch->listener_nr];
+#endif
+
+	watch->is_active = ReadDirectoryChangesW(
+		watch->hDir, watch->buffer, sizeof(watch->buffer), TRUE,
+		FILE_NOTIFY_CHANGE_FILE_NAME |
+		FILE_NOTIFY_CHANGE_DIR_NAME |
+		FILE_NOTIFY_CHANGE_ATTRIBUTES |
+		FILE_NOTIFY_CHANGE_SIZE |
+		FILE_NOTIFY_CHANGE_LAST_WRITE |
+		FILE_NOTIFY_CHANGE_CREATION,
+		&watch->count, &watch->overlapped, NULL);
+
+	if (watch->is_active)
+		return 0;
+
+	error("ReadDirectoryChangedW failed on '%s' [GLE %ld]",
+	      watch->path.buf, GetLastError());
+	return -1;
+}
+
+static int recv_rdcw_watch(struct one_watch *watch)
+{
+	watch->is_active = FALSE;
+
+	if (GetOverlappedResult(watch->hDir, &watch->overlapped, &watch->count,
+				TRUE))
+		return 0;
+
+	error("GetOverlappedResult failed on '%s' [GLE %ld]",
+	      watch->path.buf, GetLastError());
+	return -1;
+}
+
+static void cancel_rdcw_watch(struct one_watch *watch)
+{
+	DWORD count;
+
+	if (!watch || !watch->is_active)
+		return;
+
+	CancelIoEx(watch->hDir, &watch->overlapped);
+	GetOverlappedResult(watch->hDir, &watch->overlapped, &count, TRUE);
+	watch->is_active = FALSE;
+}
+
+static int process_worktree_events(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+	struct one_watch *watch = data->watch_worktree;
+	struct strbuf path = STRBUF_INIT;
+	struct string_list cookie_list = STRING_LIST_INIT_DUP;
+	struct fsmonitor_batch *batch = NULL;
+	const char *p = watch->buffer;
+
+	/*
+	 * If the kernel gets more events than will fit in the kernel
+	 * buffer associated with our RDCW handle, it drops them and
+	 * returns a count of zero.  (A successful call, but with
+	 * length zero.)
+	 */
+	if (!watch->count) {
+		trace2_data_string("fsmonitor", NULL, "fsm-listen/kernel",
+				   "overflow");
+		fsmonitor_force_resync(state);
+		return LISTENER_HAVE_DATA_WORKTREE;
+	}
+
+	/*
+	 * On Windows, `info` contains an "array" of paths that are
+	 * relative to the root of whichever directory handle received
+	 * the event.
+	 */
+	for (;;) {
+		FILE_NOTIFY_INFORMATION *info = (void *)p;
+		const char *slash;
+		enum fsmonitor_path_type t;
+
+		strbuf_reset(&path);
+		if (normalize_path_in_utf8(info, &path) == -1)
+			goto skip_this_path;
+
+		t = fsmonitor_classify_path_worktree_relative(state, path.buf);
+
+		switch (t) {
+		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
+			/* special case cookie files within gitdir */
+
+			/* Use just the filename of the cookie file. */
+			slash = find_last_dir_sep(path.buf);
+			string_list_append(&cookie_list,
+					   slash ? slash + 1 : path.buf);
+			break;
+
+		case IS_INSIDE_DOT_GIT:
+			/* ignore all other paths inside of .git/ */
+			break;
+
+		case IS_DOT_GIT:
+			/* .git directory deleted (or renamed away) */
+			if ((info->Action == FILE_ACTION_REMOVED) ||
+			    (info->Action == FILE_ACTION_RENAMED_OLD_NAME)) {
+				trace2_data_string("fsmonitor", NULL,
+						   "fsm-listen/dotgit",
+						   "removed");
+				goto force_shutdown;
+			}
+			break;
+
+		case IS_WORKTREE_PATH:
+		default:
+			/* queue normal pathname */
+			if (!batch)
+				batch = fsmonitor_batch__new();
+			fsmonitor_batch__add_path(batch, path.buf);
+			break;
+		}
+
+	skip_this_path:
+		if (!info->NextEntryOffset)
+			break;
+		p += info->NextEntryOffset;
+	}
+
+	fsmonitor_publish(state, batch, &cookie_list);
+	batch = NULL;
+	string_list_clear(&cookie_list, 0);
+	strbuf_release(&path);
+	return LISTENER_HAVE_DATA_WORKTREE;
+
+force_shutdown:
+	fsmonitor_batch__free(batch);
+	string_list_clear(&cookie_list, 0);
+	strbuf_release(&path);
+	return LISTENER_SHUTDOWN;
+}
+
+static int process_gitdir_events(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+	struct one_watch *watch = data->watch_gitdir;
+	struct strbuf path = STRBUF_INIT;
+	struct string_list cookie_list = STRING_LIST_INIT_DUP;
+	const char *p = watch->buffer;
+
+	if (!watch->count) {
+		trace2_data_string("fsmonitor", NULL, "fsm-listen/kernel",
+				   "overflow");
+		fsmonitor_force_resync(state);
+		return LISTENER_HAVE_DATA_GITDIR;
+	}
+
+	for (;;) {
+		FILE_NOTIFY_INFORMATION *info = (void *)p;
+		const char *slash;
+		enum fsmonitor_path_type t;
+
+		strbuf_reset(&path);
+		if (normalize_path_in_utf8(info, &path) == -1)
+			goto skip_this_path;
+
+		t = fsmonitor_classify_path_gitdir_relative(state, path.buf);
+
+		trace_printf_key(&trace_fsmonitor, "BBB: %s", path.buf);
+
+		switch (t) {
+		case IS_INSIDE_DOT_GIT_WITH_COOKIE_PREFIX:
+			/* special case cookie files within gitdir */
+
+			/* Use just the filename of the cookie file. */
+			slash = find_last_dir_sep(path.buf);
+			string_list_append(&cookie_list,
+					   slash ? slash + 1 : path.buf);
+			break;
+
+		default:
+			break;
+		}
+
+	skip_this_path:
+		if (!info->NextEntryOffset)
+			break;
+		p += info->NextEntryOffset;
+	}
+
+	fsmonitor_publish(state, NULL, &cookie_list);
+	string_list_clear(&cookie_list, 0);
+	strbuf_release(&path);
+	return LISTENER_HAVE_DATA_GITDIR;
+#if 0
+force_shutdown:
+	string_list_clear(&cookie_list, 0);
+	strbuf_release(&path);
+	return LISTENER_SHUTDOWN;
+#endif
+}
+
+void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
+{
+	struct fsmonitor_daemon_backend_data *data = state->backend_data;
+	DWORD dwWait;
+
+	state->error_code = 0;
+
+	if (start_rdcw_watch(data, data->watch_worktree) == -1)
+		goto force_error_stop;
+
+	if (data->watch_gitdir &&
+	    start_rdcw_watch(data, data->watch_gitdir) == -1)
+		goto force_error_stop;
+
+	for (;;) {
+		dwWait = WaitForMultipleObjects(data->nr_listener_handles,
+						data->hListener,
+						FALSE, INFINITE);
+		trace_printf_key(&trace_fsmonitor,
+				 "AAA: dwWait %d", (int)dwWait);
+
+		if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA_WORKTREE) {
+			if (recv_rdcw_watch(data->watch_worktree) == -1)
+				goto force_error_stop;
+			if (process_worktree_events(state) == LISTENER_SHUTDOWN)
+				goto force_shutdown;
+			if (start_rdcw_watch(data, data->watch_worktree) == -1)
+				goto force_error_stop;
+			continue;
+		}
+
+		if (dwWait == WAIT_OBJECT_0 + LISTENER_HAVE_DATA_GITDIR) {
+			if (recv_rdcw_watch(data->watch_gitdir) == -1)
+				goto force_error_stop;
+			if (process_gitdir_events(state) == LISTENER_SHUTDOWN)
+				goto force_shutdown;
+			if (start_rdcw_watch(data, data->watch_gitdir) == -1)
+				goto force_error_stop;
+			continue;
+		}
+
+		if (dwWait == WAIT_OBJECT_0 + LISTENER_SHUTDOWN)
+			goto clean_shutdown;
+
+		error(_("could not read directory changes [GLE %ld]"),
+		      GetLastError());
+		goto force_error_stop;
+	}
+
+force_error_stop:
+	state->error_code = -1;
+
+force_shutdown:
+	/*
+	 * Tell the IPC thead pool to stop (which completes the await
+	 * in the main thread (which will also signal this thread (if
+	 * we are still alive))).
+	 */
+	ipc_server_stop_async(state->ipc_server_data);
+
+clean_shutdown:
+	cancel_rdcw_watch(data->watch_worktree);
+	cancel_rdcw_watch(data->watch_gitdir);
+}
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+#if 0
 /*
  * Use OVERLAPPED IO to call ReadDirectoryChangesW() so that we can
  * wait for IO and/or a shutdown event.
@@ -190,59 +532,52 @@ cleanup:
 
 	return result;
 }
+#endif
 
 int fsmonitor_listen__ctor(struct fsmonitor_daemon_state *state)
 {
 	struct fsmonitor_daemon_backend_data *data;
-	DWORD desired_access = FILE_LIST_DIRECTORY;
-	DWORD share_mode =
-		FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE;
-	HANDLE dir_w = INVALID_HANDLE_VALUE;
-	HANDLE dir_g = INVALID_HANDLE_VALUE;
-
-	dir_w = CreateFileA(state->path_worktree_watch.buf,
-			    desired_access, share_mode, NULL, OPEN_EXISTING,
-			    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-			    NULL);
-	if (dir_w == INVALID_HANDLE_VALUE) {
-		error(_("[GLE %ld] could not watch '%s'"),
-		      GetLastError(), state->path_worktree_watch.buf);
-
-		return -1;
-	}
-
-	if (state->nr_paths_watching > 1) {
-		dir_g = CreateFileA(state->path_gitdir_watch.buf,
-				    desired_access, share_mode, NULL, OPEN_EXISTING,
-				    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-				    NULL);
-		if (dir_g == INVALID_HANDLE_VALUE) {
-			error(_("[GLE %ld] could not watch '%s'"),
-			      GetLastError(), state->path_gitdir_watch.buf);
-
-			CloseHandle(dir_w);
-			return -1;
-		}
-	}
 
 	data = xcalloc(1, sizeof(*data));
 
-	data->hDirWorktree = dir_w;
-	data->hDirGitDir = dir_g;
+	data->hEventShutdown = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-	data->hListener[LISTENER_SHUTDOWN] =
-		CreateEvent(NULL, TRUE, FALSE, NULL);
+	data->watch_worktree = create_watch(state,
+					    state->path_worktree_watch.buf,
+					    LISTENER_HAVE_DATA_WORKTREE);
+	if (!data->watch_worktree)
+		goto failed;
+
+	if (state->nr_paths_watching > 1) {
+		data->watch_gitdir = create_watch(state,
+						  state->path_gitdir_watch.buf,
+						  LISTENER_HAVE_DATA_GITDIR);
+		if (!data->watch_gitdir)
+			goto failed;
+	}
+
+	data->hListener[LISTENER_SHUTDOWN] = data->hEventShutdown;
+	data->nr_listener_handles++;
+
 	data->hListener[LISTENER_HAVE_DATA_WORKTREE] =
-		CreateEvent(NULL, TRUE, FALSE, NULL);
-	if (state->nr_paths_watching > 1)
+		data->watch_worktree->hEvent;
+	data->nr_listener_handles++;
+
+	if (data->watch_gitdir) {
 		data->hListener[LISTENER_HAVE_DATA_GITDIR] =
-			CreateEvent(NULL, TRUE, FALSE, NULL);
-	else
-		data->hListener[LISTENER_HAVE_DATA_GITDIR] =
-			INVALID_HANDLE_VALUE;
+			data->watch_gitdir->hEvent;
+		data->nr_listener_handles++;
+	}
 
 	state->backend_data = data;
 	return 0;
+
+failed:
+	CloseHandle(data->hEventShutdown);
+	destroy_watch(data->watch_worktree);
+	destroy_watch(data->watch_gitdir);
+
+	return -1;
 }
 
 void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
@@ -254,17 +589,9 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 
 	data = state->backend_data;
 
-	if (data->hListener[LISTENER_SHUTDOWN] != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hListener[LISTENER_SHUTDOWN]);
-	if (data->hListener[LISTENER_HAVE_DATA_WORKTREE] != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hListener[LISTENER_HAVE_DATA_WORKTREE]);
-	if (data->hListener[LISTENER_HAVE_DATA_GITDIR] != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hListener[LISTENER_HAVE_DATA_GITDIR]);
-
-	if (data->hDirWorktree != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hDirWorktree);
-	if (data->hDirGitDir != INVALID_HANDLE_VALUE)
-		CloseHandle(data->hDirGitDir);
+	CloseHandle(data->hEventShutdown);
+	destroy_watch(data->watch_worktree);
+	destroy_watch(data->watch_gitdir);
 
 	FREE_AND_NULL(state->backend_data);
 }
@@ -272,7 +599,7 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 // TODO RDCW() has a note in [1] WRT short-names.  We should understand
 // TODO what it means.
 // TODO [1] https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw
-
+#if 0
 void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 {
 
@@ -406,3 +733,4 @@ shutdown_event:
 	strbuf_release(&path);
 	return;
 }
+#endif
