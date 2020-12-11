@@ -1052,6 +1052,12 @@ static void *fsmonitor_listen_thread_proc(void *_state)
 
 	trace2_thread_start("fsm-listen");
 
+	trace_printf_key(&trace_fsmonitor, "Watching: worktree '%s'",
+			 state->path_worktree_watch.buf);
+	if (state->nr_paths_watching > 1)
+		trace_printf_key(&trace_fsmonitor, "Watching: gitdir '%s'",
+				 state->path_gitdir_watch.buf);
+
 	fsmonitor_listen__loop(state);
 
 	pthread_mutex_lock(&state->main_lock);

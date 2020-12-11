@@ -451,12 +451,6 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 
 	data = state->backend_data;
 
-	trace_printf_key(&trace_fsmonitor, "Watching: '%s' for fsevents",
-			 state->path_worktree_watch.buf);
-	if (state->nr_paths_watching > 1)
-		trace_printf_key(&trace_fsmonitor, "Watching: '%s' for fsevents",
-				 state->path_gitdir_watch.buf);
-
 	data->rl = CFRunLoopGetCurrent();
 
 	FSEventStreamScheduleWithRunLoop(data->stream, data->rl, kCFRunLoopDefaultMode);
