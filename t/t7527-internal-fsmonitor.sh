@@ -32,6 +32,11 @@ kill_repo () {
 # execute before the child is ready to receive commands.  Insert a small
 # delay to make CI/PR builds more stable.
 #
+# Also, if the child process fails (for example, if it cannot create the
+# socket or named pipe), it will exit with a non-zero exit code, BUT the
+# parent process will not see that, so the "|| return $?" will not see
+# the error.  So we insert a "--is-running" here to confirm.
+#
 start_daemon () {
 	case "$#" in
 		1) r="-C $1";;
@@ -39,8 +44,9 @@ start_daemon () {
 	esac
 
 	git $r fsmonitor--daemon --start || return $?
-
 	sleep 1
+	git $r fsmonitor--daemon --is-running || return $?
+
 	return 0
 }
 
@@ -50,7 +56,6 @@ test_expect_success 'explicit daemon start and stop' '
 	git init test_explicit &&
 	start_daemon test_explicit &&
 
-	git -C test_explicit fsmonitor--daemon --is-running &&
 	git -C test_explicit fsmonitor--daemon --stop &&
 	test_must_fail git -C test_explicit fsmonitor--daemon --is-running
 '
@@ -94,8 +99,6 @@ test_expect_success 'implicit daemon stop (delete .git)' '
 
 	start_daemon test_implicit_1 &&
 
-	git -C test_implicit_1 fsmonitor--daemon --is-running &&
-
 	# deleting the .git directory will implicitly stop the daemon.
 	rm -rf test_implicit_1/.git &&
 
@@ -118,8 +121,6 @@ test_expect_success 'implicit daemon stop (rename .git)' '
 
 	start_daemon test_implicit_2 &&
 
-	git -C test_implicit_2 fsmonitor--daemon --is-running &&
-
 	# renaming the .git directory will implicitly stop the daemon.
 	mv test_implicit_2/.git test_implicit_2/.xxx &&
 
@@ -141,8 +142,6 @@ test_expect_success 'cannot start multiple daemons' '
 	git init test_multiple &&
 
 	start_daemon test_multiple &&
-
-	git -C test_multiple fsmonitor--daemon --is-running &&
 
 	test_must_fail git -C test_multiple fsmonitor--daemon --start 2>actual &&
 	grep "fsmonitor--daemon is already running" actual &&
@@ -482,8 +481,17 @@ test_expect_success 'setup worktree base' '
 
 test_expect_success 'worktree with .git file' '
 	git -C wt-base worktree add ../wt-secondary &&
-	start_daemon wt-secondary &&
-	git -C wt-secondary fsmonitor--daemon --is-running &&
+
+	(
+		GIT_TRACE2_PERF="$PWD/trace2_wt_secondary" &&
+		export GIT_TRACE2_PERF &&
+
+		GIT_TRACE_FSMONITOR="$PWD/trace_wt_secondary" &&
+		export GIT_TRACE_FSMONITOR &&
+
+		start_daemon wt-secondary
+	) &&
+
 	git -C wt-secondary fsmonitor--daemon --stop &&
 	test_must_fail git -C wt-secondary fsmonitor--daemon --is-running
 '
