@@ -115,6 +115,9 @@ struct fsmonitor_daemon_backend_data
 		FORCE_SHUTDOWN,
 		FORCE_ERROR_STOP,
 	} shutdown_style;
+
+	unsigned int stream_scheduled:1;
+	unsigned int stream_started:1;
 };
 
 static void log_flags_set(const char *path, const FSEventStreamEventFlags flag)
@@ -422,8 +425,10 @@ void fsmonitor_listen__dtor(struct fsmonitor_daemon_state *state)
 	// TODO destroy data->{watch_path,cookie_path,paths_to_watch} ??
 
 	if (data->stream) {
-		FSEventStreamStop(data->stream);
-		FSEventStreamInvalidate(data->stream);
+		if (data->stream_started)
+			FSEventStreamStop(data->stream);
+		if (data->stream_scheduled)
+			FSEventStreamInvalidate(data->stream);
 		FSEventStreamRelease(data->stream);
 	}
 
@@ -455,10 +460,13 @@ void fsmonitor_listen__loop(struct fsmonitor_daemon_state *state)
 	data->rl = CFRunLoopGetCurrent();
 
 	FSEventStreamScheduleWithRunLoop(data->stream, data->rl, kCFRunLoopDefaultMode);
+	data->stream_scheduled = 1;
+
 	if (!FSEventStreamStart(data->stream)) {
 		error("Failed to start the FSEventStream");
 		goto force_error_stop_without_loop;
 	}
+	data->stream_started = 1;
 
 	CFRunLoopRun();
 
