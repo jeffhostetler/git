@@ -70,14 +70,14 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 
 	my_cookie_seq = state->cookie_seq++;
 
-	strbuf_addstr(&cookie_pathname, state->path_cookie_prefix.buf);
+	strbuf_addbuf(&cookie_pathname, &state->path_cookie_prefix);
 	strbuf_addf(&cookie_pathname, "%i-%i", getpid(), my_cookie_seq);
 
 	slash = find_last_dir_sep(cookie_pathname.buf);
 	if (slash)
 		strbuf_addstr(&cookie_filename, slash + 1);
 	else
-		strbuf_addstr(&cookie_filename, cookie_pathname.buf);
+		strbuf_addbuf(&cookie_filename, &cookie_pathname);
 	cookie.name = strbuf_detach(&cookie_filename, NULL);
 	cookie.result = FCIR_INIT;
 	// TODO should we have case-insenstive hash (and in cookie_cmp()) ??
@@ -1133,7 +1133,7 @@ static int fsmonitor_run_daemon(void)
 	 * cone of <worktree-root>, so set up a second watch for it.
 	 */
 	strbuf_init(&state.path_gitdir_watch, 0);
-	strbuf_addstr(&state.path_gitdir_watch, state.path_worktree_watch.buf);
+	strbuf_addbuf(&state.path_gitdir_watch, &state.path_worktree_watch);
 	strbuf_addstr(&state.path_gitdir_watch, "/.git");
 	if (!is_directory(state.path_gitdir_watch.buf)) {
 		strbuf_reset(&state.path_gitdir_watch);
@@ -1146,7 +1146,7 @@ static int fsmonitor_run_daemon(void)
 	 * <gitdir>/<cookie-prefix><pid>-<seq>.
 	 */
 	strbuf_init(&state.path_cookie_prefix, 0);
-	strbuf_addstr(&state.path_cookie_prefix, state.path_gitdir_watch.buf);
+	strbuf_addbuf(&state.path_cookie_prefix, &state.path_gitdir_watch);
 	strbuf_addch(&state.path_cookie_prefix, '/');
 	strbuf_addstr(&state.path_cookie_prefix, FSMONITOR_COOKIE_PREFIX);
 
