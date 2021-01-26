@@ -273,6 +273,13 @@ int write_packetized_from_fd(int fd_in, int fd_out)
 int write_packetized_from_buf(const char *src_in, size_t len, int fd_out)
 {
 	static struct packet_scratch_space scratch;
+
+	return write_packetized_from_buf2(src_in, len, fd_out, &scratch);
+}
+
+int write_packetized_from_buf2(const char *src_in, size_t len, int fd_out,
+			       struct packet_scratch_space *scratch)
+{
 	int err = 0;
 	size_t bytes_written = 0;
 	size_t bytes_to_write;
@@ -284,7 +291,7 @@ int write_packetized_from_buf(const char *src_in, size_t len, int fd_out)
 			bytes_to_write = len - bytes_written;
 		if (bytes_to_write == 0)
 			break;
-		err = packet_write_gently(fd_out, src_in + bytes_written, bytes_to_write, &scratch);
+		err = packet_write_gently(fd_out, src_in + bytes_written, bytes_to_write, scratch);
 		bytes_written += bytes_to_write;
 	}
 	if (!err)
