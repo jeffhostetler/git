@@ -65,7 +65,7 @@ test_expect_success 'implicit daemon start' '
 	GIT_TRACE2_EVENT="$PWD/.git/trace" \
 		git -C test_implicit fsmonitor--daemon --query 0 >actual &&
 	nul_to_q <actual >actual.filtered &&
-	grep ":internal:" actual.filtered &&
+	grep "builtin:" actual.filtered &&
 
 	# confirm that a daemon was started in the background.
 	#
@@ -423,13 +423,13 @@ test_expect_success 'flush cached data' '
 	# then a few (probably platform-specific number of) events in _1.
 	# These should both have the same <token_id>.
 
-	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_0 &&
+	git -C test_flush fsmonitor--daemon --query "builtin:test_00000001:0" >actual_0 &&
 	nul_to_q <actual_0 >actual_q0 &&
 
 	touch test_flush/file_1 &&
 	touch test_flush/file_2 &&
 
-	git -C test_flush fsmonitor--daemon --query ":internal:test_00000001:0" >actual_1 &&
+	git -C test_flush fsmonitor--daemon --query "builtin:test_00000001:0" >actual_1 &&
 	nul_to_q <actual_1 >actual_q1 &&
 
 	grep "file_1" actual_q1 &&
@@ -440,16 +440,16 @@ test_expect_success 'flush cached data' '
 
 	git -C test_flush fsmonitor--daemon --flush >flush_0 &&
 	nul_to_q <flush_0 >flush_q0 &&
-	grep "^:internal:test_00000002:0Q/Q$" flush_q0 &&
+	grep "^builtin:test_00000002:0Q/Q$" flush_q0 &&
 
-	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_2 &&
+	git -C test_flush fsmonitor--daemon --query "builtin:test_00000002:0" >actual_2 &&
 	nul_to_q <actual_2 >actual_q2 &&
 
-	grep "^:internal:test_00000002:0Q$" actual_q2 &&
+	grep "^builtin:test_00000002:0Q$" actual_q2 &&
 
 	touch test_flush/file_3 &&
 
-	git -C test_flush fsmonitor--daemon --query ":internal:test_00000002:0" >actual_3 &&
+	git -C test_flush fsmonitor--daemon --query "builtin:test_00000002:0" >actual_3 &&
 	nul_to_q <actual_3 >actual_q3 &&
 
 	grep "file_3" actual_q3
