@@ -331,7 +331,7 @@ static int lookup_client_test_delay(void)
  *
  * For the built-in fsmonitor--daemon, we define a token as follows:
  *
- *     ":internal:" <token_id> ":" <sequence_nr>
+ *     "builtin" ":" <token_id> ":" <sequence_nr>
  *
  * The <token_id> is an arbitrary OPAQUE string, such as a GUID,
  * UUID, or {timestamp,pid}.  It is used to group all filesystem
