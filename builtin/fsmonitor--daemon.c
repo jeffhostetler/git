@@ -622,7 +622,7 @@ static void fsmonitor_format_response_token(
 	uint64_t seq_nr = (batch) ? batch->batch_seq_nr + 1 : 0;
 
 	strbuf_reset(response_token);
-	strbuf_addf(response_token, ":internal:%s:%"PRIu64,
+	strbuf_addf(response_token, "builtin:%s:%"PRIu64,
 		    response_token_id->buf, seq_nr);
 }
 
@@ -639,7 +639,7 @@ static int fsmonitor_parse_client_token(const char *buf_token,
 	strbuf_reset(requested_token_id);
 	*seq_nr = 0;
 
-	if (!skip_prefix(buf_token, ":internal:", &p))
+	if (!skip_prefix(buf_token, "builtin:", &p))
 		return 1;
 
 	while (*p && *p != ':')
@@ -723,7 +723,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		goto send_trivial_response;
 	}
 
-	if (!skip_prefix(command, ":internal:", &p)) {
+	if (!skip_prefix(command, "builtin:", &p)) {
 		/* assume V1 timestamp or garbage */
 
 		char *p_end;
