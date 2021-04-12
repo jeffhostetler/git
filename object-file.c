@@ -32,6 +32,7 @@
 #include "packfile.h"
 #include "object-store.h"
 #include "promisor-remote.h"
+#include "odb-over-ipc.h"
 
 /* The maximum size for an object header. */
 #define MAX_HEADER_LEN 32
@@ -1566,9 +1567,18 @@ int oid_object_info_extended(struct repository *r, const struct object_id *oid,
 			     struct object_info *oi, unsigned flags)
 {
 	int ret;
+
+	if (!odb_over_ipc__get_oid(r, oid, oi, flags))
+		return 0;
+
+	trace2_region_enter("oid", "object", r);
+
 	obj_read_lock();
 	ret = do_oid_object_info_extended(r, oid, oi, flags);
 	obj_read_unlock();
+
+	trace2_region_leave("oid", "object", r);
+
 	return ret;
 }
 
