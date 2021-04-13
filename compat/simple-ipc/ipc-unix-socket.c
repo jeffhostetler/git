@@ -423,7 +423,7 @@ static int do_io_reply_callback(struct ipc_server_reply_data *reply_data,
  * data), our use of the pkt-line read routines will spew an error
  * message.
  *
- * Return -1 if the client hung up.
+ * Return -1 if the client hung up (or we are in a shutdown).
  * Return 0 if data (possibly incomplete) is ready.
  */
 static int worker_thread__wait_for_io_start(
@@ -442,7 +442,7 @@ static int worker_thread__wait_for_io_start(
 		if (result < 0) {
 			if (errno == EINTR)
 				continue;
-			goto cleanup;
+			return -1;
 		}
 
 		if (result == 0) {
@@ -459,22 +459,18 @@ static int worker_thread__wait_for_io_start(
 			 * client has not started talking yet, just drop it.
 			 */
 			if (in_shutdown)
-				goto cleanup;
+				return -1;
 			continue;
 		}
 
 		if (pollfd[0].revents & POLLHUP)
-			goto cleanup;
+			return -1;
 
 		if (pollfd[0].revents & POLLIN)
 			return 0;
 
-		goto cleanup;
+		return -1; /* should not happen */
 	}
-
-cleanup:
-	close(fd);
-	return -1;
 }
 
 /*
@@ -577,6 +573,7 @@ top:
 		io = worker_thread__wait_for_io_start(worker_thread_data, fd);
 		if (io == -1) {
 			/* client hung up without sending anything */
+			close(fd);
 			goto top;
 		}
 
