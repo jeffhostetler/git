@@ -63,7 +63,8 @@ try_again:
 	switch (state) {
 	case IPC_STATE__LISTENING:
 		ret = ipc_client_send_command_to_connection(
-			connection, since_token, answer);
+			connection, since_token, strlen(since_token),
+			answer);
 		ipc_client_close_connection(connection);
 
 		trace2_data_intmax("fsm_client", NULL,
@@ -138,7 +139,9 @@ int fsmonitor_ipc__send_command(const char *command,
 		return -1;
 	}
 
-	ret = ipc_client_send_command_to_connection(connection, command, answer);
+	ret = ipc_client_send_command_to_connection(connection,
+						    command, strlen(command),
+						    answer);
 	ipc_client_close_connection(connection);
 
 	if (ret == -1) {

@@ -996,10 +996,24 @@ send_empty_response:
 
 static ipc_server_application_cb handle_client;
 
-static int handle_client(void *data, const char *command,
+static int handle_client(void *data,
+			 const char *command, size_t command_len,
 			 ipc_server_reply_cb *reply,
 			 struct ipc_server_reply_data *reply_data)
 {
+	// TODO I did not take time to ensure that `command_len` is
+	// TODO large enough to do all of the strcmp() and starts_with()
+	// TODO calculations when I converted the IPC API to take
+	// TODO `command, command_len` rather than just `command`.
+	// TODO So some cleanup is needed here.
+	// TODO
+	// TODO But we know that FSMonitor always uses regular text
+	// TODO in both the request and response (no binary messages
+	// TODO here), so the cleanup is more of the `assert` form.
+	// TODO
+	// TODO For example, I should pass `command, command_len` into
+	// TODO `do_handle_client()` for completeness.
+
 	struct fsmonitor_daemon_state *state = data;
 	int result;
 

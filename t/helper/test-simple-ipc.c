@@ -112,7 +112,7 @@ static int app__slow_command(ipc_server_reply_cb *reply_cb,
 /*
  * The client sent a command followed by a (possibly very) large buffer.
  */
-static int app__sendbytes_command(const char *received,
+static int app__sendbytes_command(const char *received, size_t received_len,
 				  ipc_server_reply_cb *reply_cb,
 				  struct ipc_server_reply_data *reply_data)
 {
@@ -122,6 +122,12 @@ static int app__sendbytes_command(const char *received,
 	int k;
 	int errs = 0;
 	int ret;
+
+	// TODO I did not take time to ensure that `received_len` is
+	// TODO large enough to do all of the skip_prefix()
+	// TODO calculations when I converted the IPC API to take
+	// TODO `received, received_len` rather than just `received`.
+	// TODO So some cleanup is needed here.
 
 	if (skip_prefix(received, "sendbytes ", &p))
 		len_ballast = strlen(p);
@@ -160,10 +166,16 @@ static ipc_server_application_cb test_app_cb;
  * by this application.
  */
 static int test_app_cb(void *application_data,
-		       const char *command,
+		       const char *command, size_t command_len,
 		       ipc_server_reply_cb *reply_cb,
 		       struct ipc_server_reply_data *reply_data)
 {
+	// TODO I did not take time to ensure that `command_len` is
+	// TODO large enough to do all of the strcmp() and starts_with()
+	// TODO calculations when I converted the IPC API to take
+	// TODO `command, command_len` rather than just `command`.
+	// TODO So some cleanup is needed here.
+
 	/*
 	 * Verify that we received the application-data that we passed
 	 * when we started the ipc-server.  (We have several layers of
@@ -208,7 +220,8 @@ static int test_app_cb(void *application_data,
 		return app__slow_command(reply_cb, reply_data);
 
 	if (starts_with(command, "sendbytes "))
-		return app__sendbytes_command(command, reply_cb, reply_data);
+		return app__sendbytes_command(command, command_len,
+					      reply_cb, reply_data);
 
 	return app__unhandled_command(command, reply_cb, reply_data);
 }
@@ -488,7 +501,9 @@ static int client__send_ipc(void)
 	options.wait_if_busy = 1;
 	options.wait_if_not_found = 0;
 
-	if (!ipc_client_send_command(cl_args.path, &options, command, &buf)) {
+	if (!ipc_client_send_command(cl_args.path, &options,
+				     command, strlen(command),
+				     &buf)) {
 		if (buf.len) {
 			printf("%s\n", buf.buf);
 			fflush(stdout);
@@ -556,7 +571,9 @@ static int do_sendbytes(int bytecount, char byte, const char *path,
 	strbuf_addstr(&buf_send, "sendbytes ");
 	strbuf_addchars(&buf_send, byte, bytecount);
 
-	if (!ipc_client_send_command(path, options, buf_send.buf, &buf_resp)) {
+	if (!ipc_client_send_command(path, options,
+				     buf_send.buf, buf_send.len,
+				     &buf_resp)) {
 		strbuf_rtrim(&buf_resp);
 		printf("sent:%c%08d %s\n", byte, bytecount, buf_resp.buf);
 		fflush(stdout);
@@ -700,7 +717,9 @@ static int client__keepalive(void)
 		return error("failed to connect to '%s'", cl_args.path);
 
 	for (k = 0; k < 10; k++) {
-		ret = ipc_client_send_command_to_connection(connection, "ping", &answer);
+		ret = ipc_client_send_command_to_connection(connection,
+							    "ping", 4,
+							    &answer);
 		if (ret) {
 			error("failed to send ping[%d]", k);
 			goto cleanup;
