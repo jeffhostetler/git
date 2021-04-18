@@ -134,6 +134,9 @@ int odb_over_ipc__get_oid(struct repository *r, const struct object_id *oid,
 	if (is_daemon)
 		return -1;
 
+	if (!core_use_odb_over_ipc)
+		return -1;
+
 	if (r != the_repository)	// TODO not dealing with this
 		return -1;
 

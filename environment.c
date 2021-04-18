@@ -110,6 +110,8 @@ static char *git_namespace;
 
 static char *super_prefix;
 
+int core_use_odb_over_ipc;
+
 /*
  * Repository-local GIT_* environment variables; see cache.h for details.
  */
