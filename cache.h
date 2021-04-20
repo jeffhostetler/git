@@ -965,6 +965,8 @@ extern const char *core_fsmonitor;
 extern int core_apply_sparse_checkout;
 extern int core_sparse_checkout_cone;
 
+extern int core_use_odb_over_ipc;
+
 /*
  * Include broken refs in all ref iterations, which will
  * generally choke dangerous operations rather than letting
