@@ -360,9 +360,8 @@ test_expect_failure 'blame with pathspec outside sparse definition' '
 	test_all_match git blame deep/deeper2/deepest/a
 '
 
-# TODO: reset currently does not behave as expected when in a
-# sparse-checkout.
-test_expect_failure 'checkout and reset (mixed)' '
+# This works within the microsoft/git fork!
+test_expect_success 'checkout and reset (mixed)' '
 	init_repos &&
 
 	test_all_match git checkout -b reset-test update-deep &&
