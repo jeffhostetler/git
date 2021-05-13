@@ -389,12 +389,14 @@ static struct fsmonitor_token_data *fsmonitor_new_token_data(void)
 	static int test_env_value = -1;
 	static uint64_t flush_count = 0;
 	struct fsmonitor_token_data *token;
+	struct fsmonitor_batch *batch;
 
 	token = (struct fsmonitor_token_data *)xcalloc(1, sizeof(*token));
+	batch = fsmonitor_batch__new();
 
 	strbuf_init(&token->token_id, 0);
-	token->batch_head = NULL;
-	token->batch_tail = NULL;
+	token->batch_head = batch;
+	token->batch_tail = batch;
 	token->client_ref_count = 0;
 
 	if (test_env_value < 0)
@@ -619,7 +621,7 @@ static void fsmonitor_format_response_token(
 	const struct strbuf *response_token_id,
 	const struct fsmonitor_batch *batch)
 {
-	uint64_t seq_nr = (batch) ? batch->batch_seq_nr + 1 : 0;
+	uint64_t seq_nr = (batch) ? batch->batch_seq_nr : 0;
 
 	strbuf_reset(response_token);
 	strbuf_addf(response_token, "builtin:%s:%"PRIu64,
@@ -879,7 +881,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	shown = kh_init_str();
 	for (batch = batch_head;
-	     batch && batch->batch_seq_nr + 1 >= requested_oldest_seq_nr;
+	     batch && batch->batch_seq_nr > requested_oldest_seq_nr;
 	     batch = batch->next) {
 		size_t k;
 
@@ -1126,10 +1128,7 @@ void fsmonitor_publish(struct fsmonitor_daemon_state *state,
 
 		head = state->current_token_data->batch_head;
 		if (!head) {
-			batch->batch_seq_nr = 0;
-			batch->next = NULL;
-			state->current_token_data->batch_head = batch;
-			state->current_token_data->batch_tail = batch;
+			BUG("token does not have batch");
 		} else if (head->pinned_time) {
 			/*
 			 * We cannot alter the current batch list
