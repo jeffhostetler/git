@@ -966,9 +966,13 @@ send_trivial_response:
 	pthread_mutex_unlock(&state->main_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
+
 	trace2_data_string("fsmonitor", the_repository, "response/token",
 			   response_token.buf);
+	trace_printf_key(&trace_fsmonitor, "response token: %s", response_token.buf);
+
 	reply(reply_data, "/", 2);
+
 	trace2_data_intmax("fsmonitor", the_repository, "response/trivial", 1);
 
 	strbuf_release(&response_token);
@@ -984,8 +988,11 @@ send_empty_response:
 	pthread_mutex_unlock(&state->main_lock);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
+
 	trace2_data_string("fsmonitor", the_repository, "response/token",
 			   response_token.buf);
+	trace_printf_key(&trace_fsmonitor, "response token: %s", response_token.buf);
+
 	trace2_data_intmax("fsmonitor", the_repository, "response/empty", 1);
 
 	strbuf_release(&response_token);
