@@ -519,4 +519,22 @@ test_expect_success 'add everything with deep new file' '
 	test_all_match git status --porcelain=v2
 '
 
+test_expect_success 'get a staged file that is not on disk' '
+	init_repos &&
+
+	test_all_match git config core.useBuiltinFSMonitor true &&
+
+	test_all_match git reset --hard &&
+	test_all_match git status --porcelain=v2 &&
+	run_on_all rm deep/a &&
+	test_all_match git status --porcelain=v2 &&
+	test_all_match git status --porcelain=v2 &&
+
+	test_all_match git reset --hard &&
+	test_all_match git status --porcelain=v2 &&
+	run_on_all rm deep/a &&
+	test_all_match git status --porcelain=v2 &&
+	test_all_match git status --porcelain=v2
+'
+
 test_done
