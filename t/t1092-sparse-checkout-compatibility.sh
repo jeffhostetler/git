@@ -519,10 +519,53 @@ test_expect_success 'add everything with deep new file' '
 	test_all_match git status --porcelain=v2
 '
 
+# Explicitly start the daemon for each repo.
+#
+# 1. So that the daemon is not implicitly started by foreground commands
+#    and we can set daemon-specific environment variables and keep
+#    client and daemon tracing and stdout/stderr separate.
+#
+# 2. Use the "run &" form rather than the "start" form so that stdout
+#    and stderr are not closed (by the `daemonize` code).
+#
+daemon_on_all() {
+	(
+		b="$PWD/daemon-full-checkout"
+		cd full-checkout &&
+
+		export GIT_TRACE2_PERF="$b.log" &&
+		export GIT_TRACE_FSMONITOR=$"$b.log" &&
+		export GIT_TEST_FSMONITOR_TOKEN=1 &&
+		git fsmonitor--daemon --run >"$b.out" 2>&1 & # into background
+	) &&
+
+	(
+		b="$PWD/daemon-sparse-checkout"
+		cd sparse-checkout &&
+
+		export GIT_TRACE2_PERF="$b.log" &&
+		export GIT_TRACE_FSMONITOR=$"$b.log" &&
+		export GIT_TEST_FSMONITOR_TOKEN=1 &&
+		git fsmonitor--daemon --run >"$b.out" 2>&1 & # into background
+	) &&
+
+	(
+		b="$PWD/daemon-sparse-index"
+		cd sparse-index &&
+
+		export GIT_TRACE2_PERF="$b.log" &&
+		export GIT_TRACE_FSMONITOR=$"$b.log" &&
+		export GIT_TEST_FSMONITOR_TOKEN=1 &&
+		git fsmonitor--daemon --run >"$b.out" 2>&1 & # into background
+	)
+}
+
 test_expect_success 'get a staged file that is not on disk' '
 	init_repos &&
 
 	test_all_match git config core.useBuiltinFSMonitor true &&
+
+	daemon_on_all &&
 
 	test_all_match git reset --hard &&
 	test_all_match git status --porcelain=v2 &&
@@ -535,6 +578,8 @@ test_expect_success 'get a staged file that is not on disk' '
 	run_on_all rm deep/a &&
 	test_all_match git status --porcelain=v2 &&
 	test_all_match git status --porcelain=v2
+
+	# TODO test-when-finished stop all 3 daemons and turn off core.useBuiltinFSMonitor.
 '
 
 test_done
