@@ -184,7 +184,8 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 	const char *slash;
 	int my_cookie_seq;
 
-	pthread_mutex_lock(&state->main_lock);
+	/* assert state->main_lock */
+//	pthread_mutex_lock(&state->main_lock);
 
 	my_cookie_seq = state->cookie_seq++;
 
@@ -233,7 +234,7 @@ static enum fsmonitor_cookie_item_result fsmonitor_wait_for_cookie(
 		hashmap_remove(&state->cookies, &cookie.entry, NULL);
 	}
 
-	pthread_mutex_unlock(&state->main_lock);
+//	pthread_mutex_unlock(&state->main_lock);
 
 	free((char*)cookie.name);
 	strbuf_release(&cookie_pathname);
@@ -750,6 +751,66 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		 */
 		fsmonitor_force_resync(state);
 		result = 0;
+
+		pthread_mutex_lock(&state->main_lock);
+
+		batch_head = state->current_token_data->batch_head;
+		((struct fsmonitor_batch *)batch_head)->pinned_time = time(NULL);
+
+		/*
+		 * FSMonitor Protocol V2 requires that we send a response header
+		 * with a "new current token" and then all of the paths that changed
+		 * since the "requested token".
+		 */
+		fsmonitor_format_response_token(&response_token,
+						&state->current_token_data->token_id,
+						batch_head);
+		pthread_mutex_unlock(&state->main_lock);
+
+		goto send_trivial_response;
+	}
+
+	/*
+	 * Assume all other requests past this point are V1 or V2
+	 * queries and that we need to wait for sync with the file
+	 * system and respond with a token.
+	 */
+	pthread_mutex_lock(&state->main_lock);
+
+	/*
+	 * Write a cookie file inside the directory being watched in an
+	 * effort to flush out existing filesystem events that we actually
+	 * care about.  Suspend this client thread until we see the filesystem
+	 * events for this cookie file.
+	 */
+	cookie_result = fsmonitor_wait_for_cookie(state);
+
+	if (!state->current_token_data)
+		BUG("fsmonitor state does not have a current token");
+
+	/*
+	 * We mark the current head of the batch list as "pinned" so
+	 * that the listener thread will treat this item as read-only
+	 * (and prevent any more paths from being added to it) from
+	 * now on.
+	 */
+	batch_head = state->current_token_data->batch_head;
+	((struct fsmonitor_batch *)batch_head)->pinned_time = time(NULL);
+
+	/*
+	 * FSMonitor Protocol V2 requires that we send a response header
+	 * with a "new current token" and then all of the paths that changed
+	 * since the "requested token".
+	 */
+	fsmonitor_format_response_token(&response_token,
+					&state->current_token_data->token_id,
+					batch_head);
+
+	if (cookie_result != FCIR_SEEN) {
+		pthread_mutex_unlock(&state->main_lock);
+		error(_("fsmonitor: cookie_result '%d' != SEEN"),
+		      cookie_result);
+		result = 0;
 		goto send_trivial_response;
 	}
 
@@ -758,6 +819,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 		char *p_end;
 
+		pthread_mutex_unlock(&state->main_lock);
 		strtoumax(command, &p_end, 10);
 		trace_printf_key(&trace_fsmonitor,
 				 ((*p_end) ?
@@ -772,6 +834,7 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 
 	if (fsmonitor_parse_client_token(command, &requested_token_id,
 					 &requested_oldest_seq_nr)) {
+		pthread_mutex_unlock(&state->main_lock);
 		trace_printf_key(&trace_fsmonitor,
 				 "fsmonitor: invalid V2 protocol token '%s'",
 				 command);
@@ -779,17 +842,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		goto send_trivial_response;
 	}
 
-	pthread_mutex_lock(&state->main_lock);
-
-	if (!state->current_token_data) {
-		/*
-		 * We don't have a current token.  This may mean that
-		 * the listener thread has not yet started.
-		 */
-		pthread_mutex_unlock(&state->main_lock);
-		result = 0;
-		goto send_trivial_response;
-	}
 	if (strcmp(requested_token_id.buf,
 		   state->current_token_data->token_id.buf)) {
 		/*
@@ -820,24 +872,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 		goto send_trivial_response;
 	}
 
-	pthread_mutex_unlock(&state->main_lock);
-
-	/*
-	 * Write a cookie file inside the directory being watched in an
-	 * effort to flush out existing filesystem events that we actually
-	 * care about.  Suspend this client thread until we see the filesystem
-	 * events for this cookie file.
-	 */
-	cookie_result = fsmonitor_wait_for_cookie(state);
-	if (cookie_result != FCIR_SEEN) {
-		error(_("fsmonitor: cookie_result '%d' != SEEN"),
-		      cookie_result);
-		result = 0;
-		goto send_trivial_response;
-	}
-
-	pthread_mutex_lock(&state->main_lock);
-
 	if (strcmp(requested_token_id.buf,
 		   state->current_token_data->token_id.buf)) {
 		/*
@@ -864,28 +898,11 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	 *
 	 * AND it allows the listener thread to do a token-reset
 	 * (and install a new `current_token_data`).
-	 *
-	 * We mark the current head of the batch list as "pinned" so
-	 * that the listener thread will treat this item as read-only
-	 * (and prevent any more paths from being added to it) from
-	 * now on.
 	 */
 	token_data = state->current_token_data;
 	token_data->client_ref_count++;
 
-	batch_head = token_data->batch_head;
-	((struct fsmonitor_batch *)batch_head)->pinned_time = time(NULL);
-
 	pthread_mutex_unlock(&state->main_lock);
-
-	/*
-	 * FSMonitor Protocol V2 requires that we send a response header
-	 * with a "new current token" and then all of the paths that changed
-	 * since the "requested token".
-	 */
-	fsmonitor_format_response_token(&response_token,
-					&token_data->token_id,
-					batch_head);
 
 	reply(reply_data, response_token.buf, response_token.len + 1);
 	total_response_len += response_token.len + 1;
@@ -976,12 +993,6 @@ static int do_handle_client(struct fsmonitor_daemon_state *state,
 	return 0;
 
 send_trivial_response:
-	pthread_mutex_lock(&state->main_lock);
-	fsmonitor_format_response_token(&response_token,
-					&state->current_token_data->token_id,
-					state->current_token_data->batch_head);
-	pthread_mutex_unlock(&state->main_lock);
-
 	reply(reply_data, response_token.buf, response_token.len + 1);
 
 	trace2_data_string("fsmonitor", the_repository, "response/token",
