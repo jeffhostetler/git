@@ -496,4 +496,52 @@ int run_processes_parallel_tr2(int n, get_next_task_fn, start_failure_fn,
  */
 void prepare_other_repo_env(struct strvec *env_array, const char *new_git_dir);
 
+/**
+ * Possible return values for `start_bg_command()`.
+ */
+enum start_bg_result {
+	/* child process is "ready" */
+	SBGR_READY = 0,
+
+	/* child process could not be started */
+	SBGR_ERROR,
+
+	/* callback error when testing for "ready" */
+	SBGR_CB_ERROR,
+
+	/* timeout expired waiting for child to become "ready" */
+	SBGR_TIMEOUT,
+
+	/* child process exited or was signalled before becomming "ready" */
+	SBGR_DIED,
+};
+
+/**
+ * Callback used by `start_bg_command()` to ask whether the
+ * child process is ready or needs more time to become ready.
+ *
+ * Returns 1 is child needs more time (subject to the requested timeout).
+ * Returns 0 if child is ready.
+ * Returns -1 on any error and cause `start_bg_command()` to also error out.
+ */
+typedef int(start_bg_wait_cb)(void *cb_data,
+			      const struct child_process *cmd);
+
+/**
+ * Start a command in the background.  Wait long enough for the child to
+ * become "ready".  Capture immediate errors (like failure to start) and
+ * any immediate exit status (such as a shutdown/signal before the child
+ * became "ready").
+ *
+ * This is a combination of `start_command()` and `finish_command()`, but
+ * with a custom `wait_or_whine()` that allows the caller to define when
+ * the child is "ready".
+ *
+ * The caller does not need to call `finish_command()`.
+ */
+enum start_bg_result start_bg_command(struct child_process *cmd,
+				      start_bg_wait_cb *wait_cb,
+				      void *cb_data,
+				      unsigned int timeout_sec);
+
 #endif
