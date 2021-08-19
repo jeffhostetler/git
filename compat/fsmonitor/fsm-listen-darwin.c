@@ -1,4 +1,4 @@
-#if defined(__GNUC__)
+#ifndef __clang__
 /*
  * It is possible to #include CoreFoundation/CoreFoundation.h when compiling
  * with clang, but not with GCC as of time of writing.
