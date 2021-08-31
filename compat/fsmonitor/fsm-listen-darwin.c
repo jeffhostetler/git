@@ -222,6 +222,39 @@ static int ef_ignore_xattr(const FSEventStreamEventFlags ef)
 	return ((ef & mask) == kFSEventStreamEventFlagItemXattrMod);
 }
 
+/*
+ * Git does not create hardlinks in the working directory, so normally
+ * we should never see them here.  When a file is has one or more
+ * hardlink peers, the ItemIsHardLink bit is set.
+ *
+ * When a change is made to one of the files in a "hardlink set", we
+ * only receive an FSEvent for one of the paths.  We do not receive
+ * events for the others.  Therefore, if there are hardlinks present
+ * in the working directory we CANNOT guarantee that we capture all of
+ * the change notifications for hardlinked-filed in the working
+ * directory (unless all of the peers are also within the working
+ * directory (and we recursively scan the working and create (and
+ * maintain) such a peer mapping)).  If there are peers outside of the
+ * working directory, we cannot guarantee that our watch will see all
+ * of the events for such a file.
+ *
+ * NEEDSWORK: For now I'm going to assume that we do not have any
+ * hardlinks within the working directory.  If we do receive an FSEvent
+ * which has one of the hardlink bits set, we have to assume that we
+ * have an incomplete view of the working directory and we should let
+ * the clients know that, so force a flush and always send trivial
+ * responses.  With a little more work, we could maybe treat peer-sets
+ * that are completely contained within the working directory differently,
+ * but I'm not sure it is worth the complexity.  The current solution
+ * will try to watch the working directory until someone touches a peer
+ * set member, so we may give wrong answers until then.
+ */
+static int ef_is_hardlink(const FSEventStreamEventFlags ef)
+{
+	return (ef & kFSEventStreamEventFlagItemIsHardlink ||
+		ef & kFSEventStreamEventFlagItemIsLastHardlink);
+}
+
 static void fsevent_callback(ConstFSEventStreamRef streamRef,
 			     void *ctx,
 			     size_t num_of_events,
@@ -334,6 +367,12 @@ static void fsevent_callback(ConstFSEventStreamRef streamRef,
 
 			if (trace_pass_fl(&trace_fsmonitor))
 				log_flags_set(path_k, event_flags[k]);
+
+			if (ef_is_hardlink(event_flags[k])) {
+				fsmonitor_force_resync(state);
+				fsmonitor_batch__free_list(batch);
+				string_list_clear(&cookie_list, 0);
+
 
 			/*
 			 * Because of the implicit "binning" (the
