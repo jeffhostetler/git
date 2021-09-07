@@ -1171,7 +1171,9 @@ static int fsmonitor_run_daemon_1(struct fsmonitor_daemon_state *state)
 	if (ipc_server_run_async(&state->ipc_server_data,
 				 state->path_ipc.buf, &ipc_opts,
 				 handle_client, state))
-		return error(_("could not start IPC thread pool"));
+		return error_errno(
+			_("could not start IPC thread pool on '%s'"),
+			state->path_ipc.buf);
 
 	/*
 	 * Start the fsmonitor listener thread to collect filesystem
