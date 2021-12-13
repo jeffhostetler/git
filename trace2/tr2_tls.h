@@ -9,7 +9,7 @@
 #define TR2_MAX_THREAD_NAME (24)
 
 struct tr2tls_thread_ctx {
-	struct strbuf thread_name;
+	char *thread_name;
 	uint64_t *array_us_start;
 	int alloc;
 	int nr_open_regions; /* plays role of "nr" in ALLOC_GROW */
