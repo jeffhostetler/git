@@ -96,6 +96,13 @@ void tr2tls_release(void);
 int tr2tls_locked_increment(int *p);
 
 /*
+ * Append a timer data block for a new thread onto our array.
+ *
+ * Afterwards, we own the pointer and will free it at program exit.
+ */ 
+void tr2tls_locked_append_thread_timers(struct tr2timer_thread_times *p);
+
+/*
  * Capture the process start time and do nothing else.
  */
 void tr2tls_start_process_clock(void);

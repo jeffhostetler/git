@@ -531,4 +531,39 @@ void trace2_collect_process_info(enum trace2_process_info_reason reason);
 
 const char *trace2_session_id(void);
 
+/*
+ * Define a set of stopwatch timers.
+ *
+ * Timers can be used to measure "interesting" activity that does not
+ * fit the "region" model, such as code called from many different
+ * regions (like zlib) and/or where data for individual calls are not
+ * interesting or are too numerous to be efficiently logged.
+ *
+ * Timer values are accumulated during execution and emitted at
+ * program exit.
+ *
+ * We define a compile-time fixed set of timers using the following
+ * enumeration values.  We allocate block of timers for each thread as
+ * they are started and insert it into the TLS context.  This allows
+ * each thread to accumulate time events without any locks.
+ *
+ * Final timer values are then computed by the main thread at program
+ * exit from these per-thread blocks.
+ *
+ * These enum values allow us to hide all of that behind opaque types
+ * and eliminate the need for threaded-code to dynamically allocate or
+ * free timers.  Instead, they can just call _start() and _stop()
+ * using an enum value and ignore the details.
+ *
+ * These values must start at zero and be contiguous (because we use
+ * them elsewhere as array indexes).
+ */
+enum trace2_timer_id {
+	TRACE2_TIMER__ZIP_DEFLATE = 0,
+	TRACE2_TIMER__ZIP_INFLATE,
+
+	TRACE2_TIMER__MUST_BE_LAST	/* Add new timers before this. */
+};
+
+
 #endif /* TRACE2_H */

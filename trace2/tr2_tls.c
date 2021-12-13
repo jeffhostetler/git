@@ -1,6 +1,7 @@
 #include "cache.h"
 #include "thread-utils.h"
 #include "trace2/tr2_tls.h"
+#include "trace2/tr2_timer.h"
 
 /*
  * Initialize size of the thread stack for nested regions.
@@ -16,6 +17,17 @@ static pthread_mutex_t tr2tls_mutex;
 static pthread_key_t tr2tls_key;
 
 static int tr2_next_thread_id; /* modify under lock */
+
+/*
+ * We create a timer block for each thread.  We keep them
+ * in this array so that we can iterate thru them at process
+ * exit to compute the totals.  We own these pointers.  The
+ * pointer in the TLS CTX does not.
+ */
+static struct tr2timer_thread_timers **tr2tls_timers; /* modify under lock */
+static size_t tr2tls_timers__nr;
+static size_t tr2tls_timers__alloc;
+
 
 void tr2tls_start_process_clock(void)
 {
@@ -55,6 +67,8 @@ struct tr2tls_thread_ctx *tr2tls_create_self(const char *thread_name,
 		strbuf_setlen(&buf_name, TR2_MAX_THREAD_NAME);
 
 	ctx->thread_name = strbuf_detach(&buf_name, NULL);
+
+	....allocate thread block....
 
 	pthread_setspecific(tr2tls_key, ctx);
 
@@ -181,3 +195,12 @@ int tr2tls_locked_increment(int *p)
 
 	return current_value;
 }
+
+void tr2tls_locked_append_thread_timers(struct tr2timer_thread_times *p)
+{
+	pthread_mutex_lock(&tr2tls_mutex);
+	ALLOC_GROW(tr2tls_timers, tr2tls_timers__nr, tr2tls_timers__alloc);
+	tr2tls_timers[tr2tls_timers__nr++] = p;
+	pthread_mutex_unlock(&tr2tls_mutex);
+}
+
