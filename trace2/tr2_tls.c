@@ -1,5 +1,6 @@
 #include "cache.h"
 #include "thread-utils.h"
+#include "trace2/tr2_sw.h"
 #include "trace2/tr2_tls.h"
 
 /*
@@ -198,4 +199,17 @@ int tr2tls_locked_increment(int *p)
 	pthread_mutex_unlock(&tr2tls_mutex);
 
 	return current_value;
+}
+
+void tr2tls_merge_stopwatches(struct tr2sw_timer_block *sw_merged)
+{
+	struct tr2tls_thread_ctx *ctx = tr2tls_ctx_list;
+
+	while (ctx) {
+		struct tr2tls_thread_ctx *next = ctx->next_ctx;
+
+		tr2sw_merge(sw_merged, &ctx->sw);
+
+		ctx = next;
+	}
 }

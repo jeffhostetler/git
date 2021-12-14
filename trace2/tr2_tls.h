@@ -2,6 +2,7 @@
 #define TR2_TLS_H
 
 #include "strbuf.h"
+#include "trace2/tr2_sw.h"
 
 /*
  * Arbitry limit for thread names for column alignment.
@@ -15,7 +16,15 @@ struct tr2tls_thread_ctx {
 	size_t alloc;
 	size_t nr_open_regions; /* plays role of "nr" in ALLOC_GROW */
 	int thread_id;
+
+	struct tr2sw_timer_block sw;
 };
+
+/*
+ * Iterate over the global list of thread CTX data and merge the
+ * data for all of the timers.
+ */
+void tr2tls_merge_stopwatches(struct tr2sw_timer_block *sw_merged);
 
 /*
  * Create TLS data for the current thread.  This gives us a place to

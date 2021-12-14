@@ -10,6 +10,7 @@
 #include "trace2/tr2_cmd_name.h"
 #include "trace2/tr2_dst.h"
 #include "trace2/tr2_sid.h"
+#include "trace2/tr2_sw.h"
 #include "trace2/tr2_sysenv.h"
 #include "trace2/tr2_tgt.h"
 #include "trace2/tr2_tls.h"
@@ -83,6 +84,40 @@ static void tr2_tgt_disable_builtins(void)
 		tgt_j->pfn_term();
 }
 
+static void tr2main_emit_stopwatches(uint64_t us_elapsed_absolute)
+{
+	struct tr2_tgt *tgt_j;
+	int j;
+	struct tr2sw_timer_block sw_merged;
+
+	memset(&sw_merged, 0, sizeof(sw_merged));
+
+	/*
+	 * Sum across all of the per-thread stopwatch data
+	 * into a single composite set of timer values.
+	 */
+	tr2tls_merge_stopwatches(&sw_merged);
+
+	/*
+	 * Emit events for the composite timer values.  Since the TGT layer
+	 * knows about the TLS CTX, these events will be attributed to the
+	 * "main" thread.
+	 *
+	 * NEEDSWORK: I'm going to just log the sum of the stopwatch
+	 * timer values across the threads in a single record against
+	 * the "main" thread.  (One record per individual timer.)  I'm
+	 * not sure it is worth the effort to also log per-thread
+	 * events for each stopwatch.  This might be useful if we want
+	 * to understand how well we balance work across a pool of
+	 * threads, but I'm not going to worry about it right now.
+	 */
+	for_each_wanted_builtin (j, tgt_j)
+		if (tgt_j->pfn_stopwatch)
+			tr2sw_emit_timer_block(tgt_j->pfn_stopwatch,
+					       us_elapsed_absolute,
+					       &sw_merged);
+}
+
 static int tr2main_exit_code;
 
 /*
@@ -109,6 +144,8 @@ static void tr2main_atexit_handler(void)
 	 * the trace output if someone calls die(), for example.
 	 */
 	tr2tls_pop_unwind_self();
+
+	tr2main_emit_stopwatches(us_elapsed_absolute);
 
 	for_each_wanted_builtin (j, tgt_j)
 		if (tgt_j->pfn_atexit)
@@ -840,4 +877,24 @@ void trace2_printf(const char *fmt, ...)
 const char *trace2_session_id(void)
 {
 	return tr2_sid_get();
+}
+
+void trace2_stopwatch_start(enum trace2_stopwatch_id swid)
+{
+	assert(swid >= 0 && swid < TRACE2_SW_ID__MUST_BE_LAST);
+
+	if (!trace2_enabled)
+		return;
+
+	tr2sw_start(swid);
+}
+
+void trace2_stopwatch_stop(enum trace2_stopwatch_id swid)
+{
+	assert(swid >= 0 && swid < TRACE2_SW_ID__MUST_BE_LAST);
+
+	if (!trace2_enabled)
+		return;
+
+	tr2sw_start(swid);
 }

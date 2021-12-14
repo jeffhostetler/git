@@ -6,6 +6,7 @@
 #include "json-writer.h"
 #include "trace2/tr2_dst.h"
 #include "trace2/tr2_sid.h"
+#include "trace2/tr2_sw.h"
 #include "trace2/tr2_sysenv.h"
 #include "trace2/tr2_tbuf.h"
 #include "trace2/tr2_tgt.h"
@@ -548,6 +549,16 @@ static void fn_printf_va_fl(const char *file, int line,
 	strbuf_release(&buf_payload);
 }
 
+static void fn_stopwatch(uint64_t us_elapsed_abolute,
+			 const char *category,
+			 const char *name,
+			 uint64_t count,
+			 uint64_t us_elapsed_timer,
+			 uint64_t us_min_timer,
+			 uint64_t us_max_timer)
+{
+}
+
 struct tr2_tgt tr2_tgt_perf = {
 	&tr2dst_perf,
 
@@ -579,4 +590,5 @@ struct tr2_tgt tr2_tgt_perf = {
 	fn_data_fl,
 	fn_data_json_fl,
 	fn_printf_va_fl,
+	fn_stopwatch,
 };

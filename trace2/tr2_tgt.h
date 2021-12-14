@@ -4,6 +4,7 @@
 struct child_process;
 struct repository;
 struct json_writer;
+struct tr2sw_timer_block;
 
 /*
  * Function prototypes for a TRACE2 "target" vtable.
@@ -96,6 +97,14 @@ typedef void(tr2_tgt_evt_printf_va_fl_t)(const char *file, int line,
 					 uint64_t us_elapsed_absolute,
 					 const char *fmt, va_list ap);
 
+typedef void(tr2_tgt_evt_stopwatch_t)(uint64_t us_elapsed_absolute,
+				      const char *category,
+				      const char *name,
+				      uint64_t count,
+				      uint64_t us_elapsed_timer,
+				      uint64_t us_min_timer,
+				      uint64_t us_max_timer);
+
 /*
  * "vtable" for a TRACE2 target.  Use NULL if a target does not want
  * to emit that message.
@@ -132,6 +141,7 @@ struct tr2_tgt {
 	tr2_tgt_evt_data_fl_t                   *pfn_data_fl;
 	tr2_tgt_evt_data_json_fl_t              *pfn_data_json_fl;
 	tr2_tgt_evt_printf_va_fl_t              *pfn_printf_va_fl;
+	tr2_tgt_evt_stopwatch_t                 *pfn_stopwatch;
 };
 /* clang-format on */
 

@@ -6,6 +6,7 @@
 #include "trace2/tr2_dst.h"
 #include "trace2/tr2_tbuf.h"
 #include "trace2/tr2_sid.h"
+#include "trace2/tr2_sw.h"
 #include "trace2/tr2_sysenv.h"
 #include "trace2/tr2_tgt.h"
 #include "trace2/tr2_tls.h"
@@ -20,7 +21,7 @@ static struct tr2_dst tr2dst_event = { TR2_SYSENV_EVENT, 0, 0, 0, 0 };
  * a new field to an existing event, do not require an increment to the EVENT
  * format version.
  */
-#define TR2_EVENT_VERSION "3"
+#define TR2_EVENT_VERSION "4"
 
 /*
  * Region nesting limit for messages written to the event target.
@@ -612,6 +613,16 @@ static void fn_data_json_fl(const char *file, int line,
 	}
 }
 
+static void fn_stopwatch(uint64_t us_elapsed_abolute,
+			 const char *category,
+			 const char *name,
+			 uint64_t count,
+			 uint64_t us_elapsed_timer,
+			 uint64_t us_min_timer,
+			 uint64_t us_max_timer)
+{
+}
+
 struct tr2_tgt tr2_tgt_event = {
 	&tr2dst_event,
 
@@ -643,4 +654,5 @@ struct tr2_tgt tr2_tgt_event = {
 	fn_data_fl,
 	fn_data_json_fl,
 	NULL, /* printf */
+	fn_stopwatch,
 };

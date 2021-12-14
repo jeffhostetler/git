@@ -531,4 +531,40 @@ void trace2_collect_process_info(enum trace2_process_info_reason reason);
 
 const char *trace2_session_id(void);
 
+/*
+ * Define our stopwatch timers.
+ *
+ * These must start at 0 and be contiguous (because we use them elsewhere
+ * as array indexes).
+ *
+ * If you add a value here, you must also add it to tr2_sw.c:tr2sw_defs[].
+ */
+enum trace2_stopwatch_id {
+	TRACE2_SW_ID__TEST = 0,
+
+	TRACE2_SW_ID__MUST_BE_LAST /* must be last */
+};
+
+/*
+ * Define metadata for each timer.
+ */
+struct trace2_stopwatch_defs {
+	enum trace2_stopwatch_id id; /* safety check */
+	const char *category;
+	const char *name;
+};
+
+/*
+ * Start and stop a stopwatch timer in the current thread.
+ * The total elapsed time and various stats will be emitted when
+ * the program exits.
+ *
+ * Note: Since the stopwatch API routines do not generate individual
+ * events, they do not take (file, line) arguments.  Similarly, the
+ * category and timer name values are compile-time values, so they are
+ * not needed here in the API.
+ */
+void trace2_stopwatch_start(enum trace2_stopwatch_id swid);
+void trace2_stopwatch_stop(enum trace2_stopwatch_id swid);
+
 #endif /* TRACE2_H */
