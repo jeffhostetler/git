@@ -42,6 +42,8 @@ static void *preload_thread(void *_data)
 	struct cache_entry **cep = index->cache + p->offset;
 	struct cache_def cache = CACHE_DEF_INIT;
 
+	trace2_thread_start("preload");
+
 	nr = p->nr;
 	if (nr + p->offset > index->cache_nr)
 		nr = index->cache_nr - p->offset;
@@ -90,6 +92,9 @@ static void *preload_thread(void *_data)
 		pthread_mutex_unlock(&pd->mutex);
 	}
 	cache_def_clear(&cache);
+
+	trace2_thread_exit();
+
 	return NULL;
 }
 
