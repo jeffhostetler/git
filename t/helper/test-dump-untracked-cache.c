@@ -26,6 +26,8 @@ static void dump(struct untracked_cache_dir *ucd, struct strbuf *base)
 	strbuf_addf(base, "%s/", ucd->name);
 	printf("%s %s", base->buf,
 	       oid_to_hex(&ucd->exclude_oid));
+	printf(" [mtime: %08x:%08x]",
+	       ucd->stat_data.sd_mtime.sec, ucd->stat_data.sd_mtime.nsec);
 	if (ucd->recurse)
 		fputs(" recurse", stdout);
 	if (ucd->check_only)
@@ -34,7 +36,7 @@ static void dump(struct untracked_cache_dir *ucd, struct strbuf *base)
 		fputs(" valid", stdout);
 	printf("\n");
 	for (i = 0; i < ucd->untracked_nr; i++)
-		printf("%s\n", ucd->untracked[i]);
+		printf("    %s\n", ucd->untracked[i]);
 	for (i = 0; i < ucd->dirs_nr; i++)
 		dump(ucd->dirs[i], base);
 	strbuf_setlen(base, len);
@@ -62,6 +64,8 @@ int cmd__dump_untracked_cache(int ac, const char **av)
 	printf("core.excludesfile %s\n", oid_to_hex(&uc->ss_excludes_file.oid));
 	printf("exclude_per_dir %s\n", uc->exclude_per_dir);
 	printf("flags %08x\n", uc->dir_flags);
+	printf("use_fsmonitor %d\n", uc->use_fsmonitor);
+	printf("\n");
 	if (uc->root)
 		dump(uc->root, &base);
 	return 0;

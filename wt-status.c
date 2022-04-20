@@ -775,12 +775,14 @@ static void wt_status_collect_untracked(struct wt_status *s)
 
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
+		trace2_printf("dir.entries[%d]: %.*s\n", i, ent->len, ent->name);
 		if (index_name_is_other(istate, ent->name, ent->len))
 			string_list_insert(&s->untracked, ent->name);
 	}
 
 	for (i = 0; i < dir.ignored_nr; i++) {
 		struct dir_entry *ent = dir.ignored[i];
+		trace2_printf("dir.ignored[%d]: %.*s\n", i, ent->len, ent->name);
 		if (index_name_is_other(istate, ent->name, ent->len))
 			string_list_insert(&s->ignored, ent->name);
 	}
