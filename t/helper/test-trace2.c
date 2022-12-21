@@ -411,6 +411,77 @@ static int ut_201counter(int argc, const char **argv)
 	return 0;
 }
 
+struct ut_300_data {
+	int rows;
+	int len;
+	int thread_nr;
+};
+
+static void *ut_300append_thread_proc(void *_ut_300_data)
+{
+	struct ut_300_data *data = _ut_300_data;
+	struct strbuf buf = STRBUF_INIT;
+	char c = 'a' + data->thread_nr % 26;
+	int k;
+
+	strbuf_addchars(&buf, c, data->len);
+
+	trace2_thread_start("ut_300");
+
+	for (k = 0; k < data->rows; k++)
+		trace2_data_string("ut300", NULL, "row", buf.buf);
+
+	strbuf_release(&buf);
+
+	trace2_thread_exit();
+	return NULL;
+}
+
+static int ut_300append(int argc, const char **argv)
+{
+	const char *usage_error =
+		"expect <rows> <length> <threads>";
+
+	int rows = 0;
+	int len = 0;
+	int nr_threads = 0;
+	int k;
+	pthread_t *pids = NULL;
+	struct ut_300_data *array = NULL;
+
+	if (argc != 3 ||
+	    get_i(&rows, argv[0]) ||
+	    get_i(&len,  argv[1]) ||
+	    get_i(&nr_threads, argv[2]))
+		die("%s", usage_error);
+
+	if (rows < 1 || len < 1 || nr_threads < 1)
+		die("%s", usage_error);
+
+	CALLOC_ARRAY(pids, nr_threads);
+	CALLOC_ARRAY(array, nr_threads);
+
+	for (k = 0; k < nr_threads; k++) {
+		array[k].rows = rows;
+		array[k].len = len;
+		array[k].thread_nr = k;
+
+		if (pthread_create(&pids[k], NULL,
+				   ut_300append_thread_proc, &array[k]))
+			die("failed to create thread[%d]", k);
+	}
+
+	for (k = 0; k < nr_threads; k++) {
+		if (pthread_join(pids[k], NULL))
+			die("failed to join thread[%d]", k);
+	}
+
+	free(pids);
+	free(array);
+
+	return 0;
+}
+
 /*
  * Usage:
  *     test-tool trace2 <ut_name_1> <ut_usage_1>
@@ -437,6 +508,8 @@ static struct unit_test ut_table[] = {
 
 	{ ut_200counter,  "200counter", "<v1> [<v2> [<v3> [...]]]" },
 	{ ut_201counter,  "201counter", "<v1> <v2> <threads>" },
+
+	{ ut_300append,   "300append", "<rows> <length> <threads>" },
 };
 /* clang-format on */
 
