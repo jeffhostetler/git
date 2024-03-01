@@ -320,7 +320,7 @@ test_expect_success 'expect def_params for normal builtin command' '
 # Representative query command dispatched in handle_options()
 # in git.c
 #
-test_expect_failure 'expect def_params for query command' '
+test_expect_success 'expect def_params for query command' '
 	try_simple "git --man-path" "_query_"
 '
 
@@ -336,7 +336,7 @@ test_expect_failure 'expect def_params for query command' '
 # to see the run-dashed code run and an executable built from
 # remote-curl.c rather than git.c
 #
-test_expect_failure 'expect def_params for remote-curl and _run_dashed_' '
+test_expect_success 'expect def_params for remote-curl and _run_dashed_' '
 	test_when_finished "rm prop.perf actual" &&
 
 	test_config_global "trace2.configParams" "cfg.prop.*" &&
@@ -360,7 +360,7 @@ test_expect_failure 'expect def_params for remote-curl and _run_dashed_' '
 	grep "d1|main|def_param|.*|ENV_PROP_FOO:blue" actual
 '
 
-test_expect_failure 'expect def_params for http-fetch and _run_dashed_' '
+test_expect_success 'expect def_params for http-fetch and _run_dashed_' '
 	test_when_finished "rm prop.perf actual" &&
 
 	test_config_global "trace2.configParams" "cfg.prop.*" &&
