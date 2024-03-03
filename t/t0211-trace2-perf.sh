@@ -344,10 +344,10 @@ test_expect_success 'expect def_params for remote-curl and _run_dashed_' '
 
 	test_config_global "cfg.prop.foo" "red" &&
 
-	ENV_PROP_FOO=blue \
+	test_might_fail env \
+		ENV_PROP_FOO=blue \
 		GIT_TRACE2_PERF="$(pwd)/prop.perf" \
-			test_might_fail \
-				git remote-http x y &&
+		git remote-http x y &&
 
 	perl "$TEST_DIRECTORY/t0211/scrub_perf.perl" <prop.perf >actual &&
 
@@ -368,10 +368,10 @@ test_expect_success 'expect def_params for http-fetch and _run_dashed_' '
 
 	test_config_global "cfg.prop.foo" "red" &&
 
-	ENV_PROP_FOO=blue \
+	test_might_fail env \
+		ENV_PROP_FOO=blue \
 		GIT_TRACE2_PERF="$(pwd)/prop.perf" \
-			test_might_fail \
-				git http-fetch --stdin file:/// <<-EOF &&
+		git http-fetch --stdin file:/// <<-EOF &&
 	EOF
 
 	perl "$TEST_DIRECTORY/t0211/scrub_perf.perl" <prop.perf >actual &&
